@@ -93,6 +93,11 @@
     <ClInclude Include="Code\global.h" />
     <ClInclude Include="Code\timer.h" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DSP_Lib\DSP_Lib.vcxproj">
+      <Project>{8808d755-ce8c-4acf-81a3-2eaa29bb21c8}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
