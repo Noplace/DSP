@@ -98,6 +98,9 @@
       <Project>{8808d755-ce8c-4acf-81a3-2eaa29bb21c8}</Project>
     </ProjectReference>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Data\smw-02.spc" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

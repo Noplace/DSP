@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,40 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
-
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace synth {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+class Util : public Component {
+ public:
+  Util() : Component() {
+      real_t A4_freq = 440;
+      chromatic_scale_freq = new real_t[note_count];
+      for (int i=0;i<note_count;++i) {
+        chromatic_scale_freq[i] = A4_freq * pow(_2_POW_12TH,i-69);//45 = index of A4
+      }
+
+      
+  }
+
+  virtual ~Util() {
+    delete [] chromatic_scale_freq;
+  }
+
+  void set_sample_rate(uint32_t sample_rate) { 
+    Component::set_sample_rate(sample_rate);
+    sr_inv = 1.0f/real_t(sample_rate_);
+  }
+
+  real_t NoteFreq(Notes note) {
+    return chromatic_scale_freq[note];
+  }
+
+  real_t* chromatic_scale_freq;
+  real_t sr_inv;
 };
 
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
-
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
 }

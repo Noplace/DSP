@@ -18,34 +18,56 @@
 *****************************************************************************************************************/
 #pragma once
 
-namespace dsp {
+#include "instrument.h"
+#include "../padsynth/pad_synth.h"
 
-class Component {
+namespace dsp {
+namespace audio {
+namespace synth {
+namespace instruments {
+
+class PadData : public InstrumentData {
  public:
-  Component() : sample_rate_(0),sample_time_ms_(0) {}
-  virtual ~Component() {}
-  void set_sample_rate(uint32_t sample_rate) { 
-    sample_rate_ = sample_rate; 
-    sample_time_ms_ = (1000.0f/sample_rate_);
+  struct {
+     uint32_t phase,inc;
+  } pad_table[Polyphony];
+  PadData() : InstrumentData() {
+    memset(pad_table,0,sizeof(pad_table));
   }
-  real_t sample_time_ms_;
-  uint32_t sample_rate_;
 };
 
-class ProcessingComponent : public Component {
+class Pad : public InstrumentProcessor {
  public:
-  ProcessingComponent() : Component() {}
-  virtual ~ProcessingComponent() {}
-  
-  virtual real_t Tick(real_t) = 0;
-
-  void Process(real_t* input, real_t* output,size_t size) {
-    while (size--) {
-      *output++ = Tick(*input++);
+  Pad();
+  virtual ~Pad() {
+    Unload();
+  }
+  virtual int Load();
+  virtual int Unload();
+  virtual InstrumentData* NewInstrumentData() {
+    return new PadData();
+  }
+  virtual real_t Tick(int note_index);
+  virtual int SetFrequency(real_t freq, int note_index);
+  virtual int NoteOn(int note_index);
+  virtual int NoteOff(int note_index);
+  void set_instrument_data(InstrumentData* idata) {
+    cdata = (PadData*)idata;
+  }
+ protected:
+  PadData* cdata;
+  PadSynth padsynth;
+  float* buffer[128];
+  real_t harmonics_array[64];
+  uint32_t sample_size_;
+  virtual void CalculateHarmonics(real_t freq) {
+    for (int i=0;i<64;++i) {
+      harmonics_array[i] = cos(2*XM_PI*i/64.0f);
     }
   }
 };
 
-
 }
-
+}
+}
+}

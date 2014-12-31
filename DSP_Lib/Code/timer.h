@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,66 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+template<typename T>
+inline T clamp(T x, T a, T b)   {   
+  return x < a ? a : (x > b ? b : x);
+}
+
+class Timer {
+ public:
+  Timer():time_slice_(0) {
+    Calibrate();
+  }
+  void Calibrate() {
+    start_cycles_ = GetCurrentCycles();
+    QueryPerformanceFrequency((LARGE_INTEGER*)&frequency_);
+    resolution_ = 1000.0 / frequency_;
+    resolution_ns_ = 1000000 / frequency_;
+  }
+
+  double time_slice() { return time_slice_; }
+  uint64_t elapsed_ticks() { return elapsed_ticks_; }
+  __forceinline double resolution() { return resolution_; }
+  void Tick() {
+    uint64_t elapsed_cycles = GetCurrentCycles() - start_cycles_;
+    start_cycles_ = GetCurrentCycles();
+    elapsed_ticks_ = elapsed_cycles;
+    time_slice_ = (1.0 / 1000.0) * (double)elapsed_ticks_;
+  }
+
+  bool isTimeForUpdate(int framerate)
+  {
+      uint64_t actual_ticks = GetCurrentCycles() - start_cycles_;
+      actual_ticks = clamp<uint64_t>(actual_ticks,(uint64_t)0,(uint64_t)(frequency_ / 20.0));
+      if (actual_ticks >= (uint64_t)(frequency_ / framerate   )) /// (1000.0 / (T)framerate)
+      {
+        Tick();
+        return true;
+      }
+      else
+      {
+        return false;
+      }
+  }
+
+  __forceinline uint64_t GetCurrentCycles() {
+    QueryPerformanceCounter((LARGE_INTEGER*)&current_cycles_);
+    return current_cycles_; 
+  }
+
+ private:
+  uint64_t elapsed_ticks_;
+  uint64_t frequency_;
+  uint64_t current_cycles_;
+  uint64_t start_cycles_;
+  uint64_t resolution_ns_;
+  double time_slice_;
+  double resolution_;
 };
 
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
-
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
 
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
-}

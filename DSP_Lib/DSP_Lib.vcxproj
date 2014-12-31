@@ -20,7 +20,7 @@
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v120</PlatformToolset>
-    <CharacterSet>Unicode</CharacterSet>
+    <CharacterSet>NotSet</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
@@ -77,13 +77,63 @@
     <Text Include="ReadMe.txt" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Code\clip.h" />
-    <ClInclude Include="Code\component.h" />
-    <ClInclude Include="Code\delay.h" />
+    <ClInclude Include="Code\audio\formats\spc.h" />
+    <ClInclude Include="Code\audio\formats\spc\dsp.h" />
+    <ClInclude Include="Code\audio\formats\spc\spc700.h" />
+    <ClInclude Include="Code\audio\midi\midi2.h" />
+    <ClInclude Include="Code\audio\output\directsound.h" />
+    <ClInclude Include="Code\audio\output\interface.h" />
+    <ClInclude Include="Code\audio\output\output.h" />
+    <ClInclude Include="Code\audio\synth\adsr.h" />
+    <ClInclude Include="Code\audio\synth\base.h" />
+    <ClInclude Include="Code\audio\synth\channel.h" />
+    <ClInclude Include="Code\audio\synth\component.h" />
+    <ClInclude Include="Code\audio\synth\effects\delay.h" />
+    <ClInclude Include="Code\audio\synth\effects\effect.h" />
+    <ClInclude Include="Code\audio\synth\filters\chebyshev_filter.h" />
+    <ClInclude Include="Code\audio\synth\filters\iir_filter.h" />
+    <ClInclude Include="Code\audio\synth\filters\lowpass.h" />
+    <ClInclude Include="Code\audio\synth\instruments\blit.h" />
+    <ClInclude Include="Code\audio\synth\instruments\instrument.h" />
+    <ClInclude Include="Code\audio\synth\instruments\karplusstrong.h" />
+    <ClInclude Include="Code\audio\synth\instruments\osc_wave.h" />
+    <ClInclude Include="Code\audio\synth\instruments\percussion.h" />
+    <ClInclude Include="Code\audio\synth\instruments\waveguide_synthesis.h" />
+    <ClInclude Include="Code\audio\synth\midi_synth.h" />
+    <ClInclude Include="Code\audio\synth\misc.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\exp_oscillator.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\oscillator.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\sawtooth_oscillator.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\sine_oscillator.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\square_oscillator.h" />
+    <ClInclude Include="Code\audio\synth\oscillators\triangle_oscillator.h" />
+    <ClInclude Include="Code\audio\synth\player.h" />
+    <ClInclude Include="Code\audio\synth\synth.h" />
+    <ClInclude Include="Code\audio\synth\types.h" />
+    <ClInclude Include="Code\audio\synth\util.h" />
+    <ClInclude Include="Code\audio\synth\wavetable.h" />
+    <ClInclude Include="Code\audio\synth\wave_synth.h" />
     <ClInclude Include="Code\dsp.h" />
+    <ClInclude Include="Code\io.h" />
+    <ClInclude Include="Code\timer.h" />
     <ClInclude Include="Code\types.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Code\audio\formats\spc.cpp" />
+    <ClCompile Include="Code\audio\formats\spc\spc700.cpp" />
+    <ClCompile Include="Code\audio\midi\midi2.cpp" />
+    <ClCompile Include="Code\audio\output\directsound.cpp" />
+    <ClCompile Include="Code\audio\synth\instruments\blit.cpp" />
+    <ClCompile Include="Code\audio\synth\instruments\percussion.cpp" />
+    <ClCompile Include="Code\audio\synth\midi_synth.cpp" />
+    <ClCompile Include="Code\audio\synth\oscillators\exp_oscillator.cpp" />
+    <ClCompile Include="Code\audio\synth\oscillators\sawtooth_oscillator.cpp" />
+    <ClCompile Include="Code\audio\synth\oscillators\sine_oscillator.cpp" />
+    <ClCompile Include="Code\audio\synth\oscillators\square_oscillator.cpp" />
+    <ClCompile Include="Code\audio\synth\oscillators\triangle_oscillator.cpp" />
+    <ClCompile Include="Code\audio\synth\player.cpp" />
+    <ClCompile Include="Code\audio\synth\wave_synth.cpp" />
+    <ClCompile Include="Code\io.cpp" />
     <ClCompile Include="Code\lib.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -76,19 +76,46 @@ void ClientMainWindow::Create() {
 }
 
 void ClientMainWindow::Start() {
+
+  audio_interface_ = new dsp::audio::output::DirectSound();
+  audio_interface_->set_window_handle(handle_);
+  audio_interface_->set_buffer_size((44100/1)*4*10);
+  audio_interface_->Initialize(44100,2,16);
+
+  midi_synth_ = new dsp::audio::synth::MidiSynth();
+  midi_synth_->set_mode(dsp::audio::synth::MidiSynth::kModeSequencer);
+  midi_synth_->delay_unit.set_sample_rate(44100);
+  midi_synth_->delay_unit.set_delay_ms(300.0f);
+  midi_synth_->delay_unit.set_feedback(0.4f);
+  midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
+
+  wave_synth_ = new dsp::audio::synth::WaveSynth();
+  spc_  = new dsp::audio::formats::SPCSynth();
+
+  synth_player_ = new dsp::audio::synth::Player();
+  synth_player_->set_audio_interface(audio_interface_);
+  synth_player_->set_synth(spc_);
+  synth_player_->Initialize();
+
+  //midi_synth_->LoadMidiFromFile("D:\\Personal\\Projects\\StormTank\\StormTankApp\\Content\\MoonLte3.mid");
+  //wave_synth_->LoadWaveFromFile("D:\\Personal\\Samples\\Yamaha-SY-35-Clarinet-C5.wav");
+  spc_->LoadFromFile("D:\\Personal\\Samples\\smw-02.spc");
+
+  synth_player_->Play();
+
   SetClientSize(640,480);
   Center();
   Show();
-  gl.Initialize(handle_,640,480,1,0,true);
+  //gl.Initialize(handle_,640,480,1,0,true);
 }
 
 void ClientMainWindow::Destroy() {
-  gl.Deinitialize(handle_);
+  //gl.Deinitialize(handle_);
   if (class_!=0) {
     UnregisterClass(class_name_,0);
     class_ = 0;
   }
-  ChangeDisplaySettings(0,0);
+  //ChangeDisplaySettings(0,0);
 }
 
 
@@ -126,6 +153,7 @@ void ClientMainWindow::Hide() {
 }
 
 void ClientMainWindow::Fullscreen() {
+  return;
   dispmode = 1;
   display[dispmode].mode.dmPelsWidth = 1024;
   display[dispmode].mode.dmPelsHeight = 768;
@@ -150,7 +178,7 @@ void ClientMainWindow::Windowed() {
   display[dispmode].mode.dmPelsWidth = 640;
   display[dispmode].mode.dmPelsHeight = 480;
 
-  ChangeDisplaySettings(0,0);
+  //ChangeDisplaySettings(0,0);
   ShowCursor(1);
 
   SetWindowLongPtr(handle_,GWL_STYLE,display[dispmode].style);
@@ -161,9 +189,9 @@ void ClientMainWindow::Windowed() {
 }
 
 void ClientMainWindow::Step() {
-  gl.BeginScene(1,1,0,1);
+  //gl.BeginScene(1,1,0,1);
 
-  gl.EndScene();
+  //gl.EndScene();
 }
 
 LRESULT CALLBACK ClientMainWindow::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {

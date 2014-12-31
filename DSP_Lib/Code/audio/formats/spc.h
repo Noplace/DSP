@@ -17,51 +17,104 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
+#include "spc/spc700.h"
+#include "spc/dsp.h"
 
 namespace dsp {
+namespace audio {
+namespace formats {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+#pragma pack(push, 1)
+struct SPCHeader {
+  char header[33];
+  uint16_t unused1;
+  uint8_t id666_tag;
+  uint8_t minor_version;
+  uint16_t PC;
+  uint8_t A;
+  uint8_t X;
+  uint8_t Y;
+  uint8_t PSW;
+  uint8_t SP_low;
+  uint16_t reserved1;
+  struct {
+    char song_title[32];
+    char game_title[32];
+    char dumper_name[16];
+    char comments[32];
+    char dump_date[11];
+    char seconds_to_play[3]; //before fading out
+    char fade_out_ms[5]; //before fading out
+    char artist[32];
+    char channel_disable;
+    char emulator_used;
+  } text;
+  char reserved2[45];
+  struct {
+    char song_title[32];
+    char game_title[32];
+    char dumper_name[16];
+    char comments[32];
+    uint32_t dump_date;
+    char unused1[7];
+    char seconds_to_play[3]; //before fading out
+    uint32_t fade_out_ms; //before fading out
+    char artist[32];
+    char channel_disable;
+    char emulator_used;
+  } bin;
+  char reserved3[46];
 };
 
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
 
 
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
+#pragma pack(pop)
+
+class SPCSynth : public synth::Synth {
+ public:
+
+  enum State {
+    kStateStopped=0,kStatePlaying=1,kStatePaused=2
+  };
+
+  SPCSynth() : Synth(),initialized_(false),samples_to_next_event(0) {
+
+
+  }
+  ~SPCSynth() {
+    Deinitialize();
+  }
+  void Initialize();
+  void Deinitialize();
+  void RenderSamplesStereo(uint32_t samples_count, real_t* data_out);
+  void Reset();
+
+  void LoadFromFile(const char* filename);
+  void Load(uint8_t* data, size_t data_size);
+
+ private:
+  struct Track {
+    midi::Event* event_sequence;
+    uint32_t event_index,event_count,ticks_to_next_event;
+    __forceinline midi::Event* GetCurrentEvent() {
+      return &event_sequence[event_index];
     }
-}
+  };
 
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
+  void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
+  void MixChannelsStereo(uint32_t samples_to_generate);
 
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
+  CRITICAL_SECTION me_lock;
+  uint32_t samples_to_next_event;
+  bool initialized_;
 
+  SPCHeader header_;
+  uint8_t* ram_;
+  uint8_t* dsp_registers_;
+  spc::SPC700 spc700;
+};
+
+}
+}
 }

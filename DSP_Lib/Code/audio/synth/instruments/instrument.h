@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,48 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
+#include "../base.h"
+#include "../adsr.h"
 
 namespace dsp {
+namespace audio {
+namespace synth {
+namespace instruments {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+class InstrumentData {
+ public:
+  NoteData note_data_array[Polyphony];
+  InstrumentData() {
+    memset(note_data_array,0,sizeof(note_data_array));
+  }
+  virtual ~InstrumentData() {
+
+  }
 };
 
-typedef float real_t;
+class InstrumentProcessor : public Component {
+ public:
+  InstrumentProcessor() : Component() , loaded_(false) {
+   
+  }
+  virtual ~InstrumentProcessor() {
 
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
+  }
+  virtual int Load() = 0;
+  virtual int Unload() = 0;
+  virtual InstrumentData* NewInstrumentData() = 0;
+  virtual real_t Tick(int note_index) = 0;
+  virtual int SetFrequency(real_t freq, int note_index) = 0;
+  virtual int NoteOn(int note_index) = 0;
+  virtual int NoteOff(int note_index) = 0;
+  virtual void set_instrument_data(InstrumentData* idata) = 0;
+ protected:
+  ADSR adsr[Polyphony];
+  bool loaded_;
+};
 
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
 }

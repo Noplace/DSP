@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -18,48 +18,72 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "../oscillators/sine_oscillator.h"
+#include "../oscillators/square_oscillator.h"
+#include "instrument.h"
+
 namespace dsp {
+namespace audio {
+namespace synth {
+namespace instruments {
 
-class Delay : public ProcessingComponent {
+class PercussionData : public InstrumentData {
  public:
-  Delay() : ProcessingComponent(), max_samples_(0), buffer_index_(0),delay_ms_(200.0f),feedback_(0.3f) {
+  struct {
+    bool highhat_closed;
+    real_t highhat_amp,bassdrum_amp;
+    uint32_t bassdrum_phase1,bassdrum_phase2,bassdrum_inc1,bassdrum_inc2;
+    uint32_t hihat_phase[4],hihat_inc[4];
+  } table;
+  PercussionData() : InstrumentData() {
+    memset(&table,0,sizeof(table));
   }
-  ~Delay() {
-    Deinitialize();
-  }
+};
 
-  void Initialize(int max_samples)  {
-    Deinitialize();
-    max_samples_ = max_samples;
-    buffer_ = new real_t[max_samples];
-    for (auto i=0;i<max_samples;++i)
-      buffer_[i] = 0;
-    //memset(buffer_,0,max_samples*sizeof(real_t));
-  }
 
-  void Deinitialize() {
-    SafeDeleteArray(&buffer_);
+class Percussion : public InstrumentProcessor {
+ public:
+  Percussion() : InstrumentProcessor() {
+   randseed = 1;
   }
+  virtual ~Percussion() {
+    Unload(); 
+  }
+  int Load();
+  int Unload();
+  InstrumentData* NewInstrumentData() {
+    auto result = new PercussionData();
+    result->table.bassdrum_phase1 = 0;
+    result->table.bassdrum_inc1 = bassdrum_osc1.get_increment(523.25f);
+    result->table.bassdrum_phase2 = 0;
+    result->table.bassdrum_inc2 = bassdrum_osc1.get_increment(523.25f);
 
-  real_t Tick(real_t sample) {
-      buffer_[buffer_index_] = sample;
-      unsigned delayed_index = ( buffer_index_ - delay_index_ + max_samples_ ) % max_samples_;
-      auto output = buffer_[buffer_index_] = (sample + (buffer_[delayed_index]*feedback_));
-      buffer_index_ = (buffer_index_ + 1) % max_samples_;
+    return result;
   }
- 
-  void set_feedback(real_t feedback) { feedback_ = feedback; }
-  void set_delay_ms(real_t delay_ms) { 
-    delay_ms_ = delay_ms; 
-    delay_index_ = int( delay_ms_ * 0.001f * sample_rate_ ); 
+  real_t Tick(int note_index);
+  int SetFrequency(real_t freq, int note_index);
+  int NoteOn( int note_index);
+  int NoteOff(int note_index);
+  void set_instrument_data(InstrumentData* idata) {
+    cdata = (PercussionData*)idata;
   }
- private:
-  real_t* buffer_;
-  real_t feedback_,delay_ms_;
-  int buffer_index_,max_samples_;
-  int delay_index_;
+ protected:
+  typedef real_t (Percussion::*PercussionPieceTick)(PercussionData* data, int note_index);
+  static PercussionPieceTick ticks[Polyphony];
+  PercussionData* cdata;
+  real_t inv_sr;
+  unsigned int randseed;
+  oscillators::SineOscillator bassdrum_osc1,bassdrum_osc2;
+  oscillators::SquareOscillator hihat_osc;
+  real_t EmptyTick(PercussionData* data, int note_index) {
+    return 0.0f;
+  }
+  real_t HihatOpenTick(PercussionData* data, int note_index);
+  real_t HihatClosedTick(PercussionData* data, int note_index);
+  real_t BassDrumTick(PercussionData* data, int note_index);
 };
 
 }
-
-
+}
+}
+}

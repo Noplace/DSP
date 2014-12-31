@@ -32,6 +32,12 @@ class ClientMainWindow {
   void Windowed();
   void Step();
  private:
+
+  dsp::audio::output::Interface* audio_interface_;
+  dsp::audio::synth::Player*      synth_player_;
+  dsp::audio::synth::MidiSynth*   midi_synth_;
+  dsp::audio::synth::WaveSynth*   wave_synth_;
+  dsp::audio::formats::SPCSynth* spc_;
   char title_[MAX_PATH];
   char class_name_[MAX_PATH];
   WNDCLASSEXA window_class_;
@@ -39,7 +45,7 @@ class ClientMainWindow {
   ATOM class_;
   HDC dc_;
   //LONG client_width_,client_height_;
-  GL gl;
+  //GL gl;
   struct {
     DEVMODE mode;
     DWORD style;  

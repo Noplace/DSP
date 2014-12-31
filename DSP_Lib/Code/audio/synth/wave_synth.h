@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,73 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
 
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace synth {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+#pragma pack(push, 1)
+struct WaveHeader {
+  char chunkid[4];
+  uint32_t chunksize;
+  char format[4];
+  char   Subchunk1ID[4];
+  uint32_t  Subchunk1Size;
+  uint16_t  AudioFormat;
+  uint16_t  NumChannels;
+  uint32_t  SampleRate;
+  uint32_t  ByteRate;
+  uint16_t  BlockAlign;
+  uint16_t  BitsPerSample;
+  char Subchunk2ID[4];
+  uint32_t Subchunk2Size;
+};
+#pragma pack(pop)
+
+class WaveSynth : public Synth {
+ public:
+
+  enum State {
+    kStateStopped=0,kStatePlaying=1,kStatePaused=2
+  };
+
+  WaveSynth() : Synth(),initialized_(false),samples_to_next_event(0) {
+
+
+  }
+  ~WaveSynth() {
+    Deinitialize();
+  }
+  void Initialize();
+  void Deinitialize();
+  void RenderSamplesStereo(uint32_t samples_count, real_t* data_out);
+  void Reset();
+
+  void LoadWaveFromFile(const char* filename);
+  void LoadWave(uint8_t* data, size_t data_size);
+
+ private:
+  struct Track {
+    midi::Event* event_sequence;
+    uint32_t event_index,event_count,ticks_to_next_event;
+    __forceinline midi::Event* GetCurrentEvent() {
+      return &event_sequence[event_index];
+    }
+  };
+
+  void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
+  void MixChannelsStereo(uint32_t samples_to_generate);
+
+  CRITICAL_SECTION me_lock;
+  uint32_t samples_to_next_event;
+  bool initialized_;
+
+  WaveHeader wave_header_;
+  uint8_t* wave_data_;
 };
 
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
-
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
 }

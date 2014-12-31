@@ -18,28 +18,59 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "../oscillators/sine_oscillator.h"
+#include "../oscillators/triangle_oscillator.h"
+#include "../oscillators/sawtooth_oscillator.h"
+#include "instrument.h"
+#include "pad.h"
+
 namespace dsp {
+namespace audio {
+namespace synth {
+namespace instruments {
 
-class Clip : public ProcessingComponent {
+class PianoData : public PadData {
  public:
-  Clip() : ProcessingComponent(),limit_(1.0f) {}
-  virtual ~Clip() {}
-  
-  real_t Tick(real_t sample) {
-    if (sample < -limit_)
-      return -limit_;
-    else if (sample > limit_)
-      return limit_;
-    else
-      return sample;
+  struct {
+     uint32_t phase1,inc1;
+     uint32_t phase2,inc2;
+     uint32_t phase3,inc3;
+     uint32_t phase4,inc4;
+  } piano_table[Polyphony];
+  PianoData() : PadData() {
+    memset(piano_table,0,sizeof(piano_table));
   }
-
-  real_t limit() const { return limit_; }
-  void set_limit(real_t limit) { limit_ = limit; }
- protected:
-  real_t limit_;
 };
 
+class Piano : public Pad {
+ public:
+  Piano();
+  virtual ~Piano() {
+    Unload();
+  }
+  int Load();
+  int Unload();
+  InstrumentData* NewInstrumentData() {
+    return new PianoData();
+  }
+  real_t Tick(int note_index);
+  int SetFrequency(real_t freq, int note_index);
+  int NoteOn(int note_index);
+  int NoteOff(int note_index);
+  void set_instrument_data(InstrumentData* idata) {
+    Pad::set_instrument_data(idata);
+    cdata = (PianoData*)idata;
+  }
+ protected:
+  PianoData* cdata;
+  oscillators::SineOscillator osc1;
+  oscillators::SineOscillator osc2;
+  oscillators::SawtoothOscillator osc3;
+  oscillators::TriangleOscillator osc4;
+  virtual void CalculateHarmonics(real_t freq);
+};
 
 }
-
+}
+}
+}

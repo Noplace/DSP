@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,68 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
-
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace synth {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
-};
-
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
+typedef AnyCast<uint32_t,real_t> UIntToFloatCast;
 
 
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
+inline real_t bits2float(uint32_t u) {
+  UIntToFloatCast x;
+  x.in = u;
+  return x.out;
 }
 
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
+inline uint32_t RandomInt(uint32_t* seed) {
+  *seed = *seed * 196314165 + 907633515;
+  return *seed;
 }
 
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
+// uniform random float in [-1,1)
+inline real_t RandomFloat(uint32_t* seed) {
+  uint32_t bits = RandomInt(seed); // random 32-bit value
+  real_t f = bits2float((bits >> 9) | 0x40000000); // random float in [2,4)
+  return f - 3.0f; // uniform random float in [-1,1)
 }
 
+inline real_t Noise(uint32_t* seed) {
+  real_t r1 = (1+RandomFloat(seed))*0.5f;
+  real_t r2 = (1+RandomFloat(seed))*0.5f;
+  return (real_t) sqrt( -2.0f * log(r1)) * cos( 2.0f * XM_PI *r2);//white noise
+}
+
+inline real_t GussianWhiteNoise() {
+  real_t R1 = (real_t) rand() / (real_t) RAND_MAX;
+  real_t R2 = (real_t) rand() / (real_t) RAND_MAX;
+  return (real_t) sqrt( -2.0f * log( R1 )) * cos( 2.0f * XM_PI * R2 );
+}
+
+static real_t HardClip(real_t x) {
+  if (x < -1.0f)
+    return -1.0f;
+  else if (x > 1.0f)
+    return 1.0f;
+  else
+    return x;
+}
+
+static real_t SoftClip(real_t x) {
+  static const real_t lim = 0.6666666666f;
+  if (x < -lim)
+    return -lim;
+  else if (x > lim)
+    return lim;
+  else
+    return x-((x*x*x)/3.0f);
+}
+
+__forceinline real_t EnhanceHarmonics(real_t x,real_t a,real_t b,real_t c,real_t d) {
+  return ((x*x*x)*a)+((x*x)*b)+(x*c)+(d);
+}
+
+
+}
+}
 }

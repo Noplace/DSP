@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,33 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
-
-#define null 0
-
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace output {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+class Interface {
+ public:
+  virtual int Initialize(uint32_t sample_rate,uint8_t channels,uint8_t bits) = 0;
+  virtual int Deinitialize() = 0;
+  virtual int Play() = 0;
+  virtual int Stop() = 0;
+  virtual uint32_t GetBytesBuffered() = 0;
+  virtual void GetCursors(uint32_t& play, uint32_t& write) = 0;
+  virtual int Write(void* data_pointer, uint32_t size_bytes) = 0;
+  virtual int BeginWrite(uint32_t& samples) = 0;
+  virtual int EndWrite(void* data_pointer) = 0;
+  const WAVEFORMATEX& wave_format() { return wave_format_; }
+  void* window_handle() { return window_handle_; }
+  void set_window_handle(HWND window_handle) { window_handle_ = window_handle; }
+  uint32_t buffer_size() { return buffer_size_; }
+  void set_buffer_size(uint32_t buffer_size) { buffer_size_ = buffer_size; }
+ protected:
+  WAVEFORMATEX wave_format_;
+  void* window_handle_;
+  uint32_t buffer_size_;
 };
 
-typedef float real_t;
-
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
-
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
 }

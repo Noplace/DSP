@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,72 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
 
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace synth {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+class VisualAddon {
+ public:
+  virtual void AddPCMData256(float* samples, uint32_t channels, double time_ms) = 0;
 };
 
-typedef float real_t;
+class Player {
+ public:
+  enum State {
+    kStateStopped=0,kStatePlaying=1,kStatePaused=2
+  };
+  double song_length_ms;
+  Player() : state_(kStateStopped), initialized_(false),audio_interface_(nullptr),
+             visual_addon_(nullptr), player_event(nullptr),thread_handle(nullptr),thread_id(0) {
+  }
+  ~Player() {
+    Deinitialize();
+  }
+  void Initialize();
+  void Deinitialize();
+  void Play();
+  void Pause();
+  void Stop();
+  double GetPlaybackSeconds();
+  void set_audio_interface(output::Interface* audio_interface) { audio_interface_ = (output::Interface*)audio_interface; }
+  void set_visual_addon(VisualAddon* visual_addon) { 
+    EnterCriticalSection(&vis_cs);
+    visual_addon_ = (VisualAddon*)visual_addon; 
+    LeaveCriticalSection(&vis_cs);
+  }
+  void set_synth(Synth* synth) {
+    synth_ = synth;
+    synth_->player_ = this;
+  }
+  double thread_time_span;
+ private:
+  static void __stdcall callback_func(void *parm, float *buf, uint32_t len);
+  static DWORD WINAPI PlayThread(LPVOID lpThreadParameter);
+  void SendThreadMessage(int msg) {
+    EnterCriticalSection(&cs);
+    thread_msg = msg;
+    LeaveCriticalSection(&cs);
+  }
+  DWORD InstancePlayThread();
+  CRITICAL_SECTION cs,vis_cs;
+  audio::output::Interface* audio_interface_;
+  Synth* synth_;
+  VisualAddon* visual_addon_;
+  real_t* mix_buffer;
+  short* output_buffer;
+  HANDLE thread_handle,player_event;
+  double song_pos_ms,song_counter_ms,output_buffer_length_ms_;
+  uint32_t output_buffer_samples_;
+  DWORD thread_id;
+  State state_;
+  int thread_msg;
+  bool initialized_;
 
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
+};
 
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
 }

@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,51 +17,34 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #pragma once
-#include <inttypes.h>
-#include <stddef.h>
 
-#define null 0
 
-#define _2_POW_12TH 1.0594630943592952645618252949463f
-#define _LN_2 0.69314718055994530941723212145818f
-#define _LN_2_DIV_12 0.05776226504666210911810267678818f
-#define XM_PI  3.14159265358979323846f
 
 namespace dsp {
+namespace audio {
+namespace synth {
 
-template<typename T1,typename T2>
-union AnyCast{
-  T1 in;
-  T2 out;
+struct NoteData {
+    real_t freq,base_freq; //Polyphony note polyphony
+    real_t velocity;
+    int note;
+    bool on;
 };
 
-typedef float real_t;
+const int note_count = 127;
 
-typedef AnyCast<uint32_t,real_t> cast_uint32_real_t;
+enum Notes {
+  kNoteA0=21,kNoteBb0,kNoteB0,
+  kNoteC1,kNoteDb1,kNoteD1,kNoteEb1,kNoteE1,kNoteF1,kNoteGb1,kNoteG1,kNoteAb1,kNoteA1,kNoteBb1,kNoteB1,
+  kNoteC2,kNoteDb2,kNoteD2,kNoteEb2,kNoteE2,kNoteF2,kNoteGb2,kNoteG2,kNoteAb2,kNoteA2,kNoteBb2,kNoteB2,
+  kNoteC3,kNoteDb3,kNoteD3,kNoteEb3,kNoteE3,kNoteF3,kNoteGb3,kNoteG3,kNoteAb3,kNoteA3,kNoteBb3,kNoteB3,
+  kNoteC4,kNoteDb4,kNoteD4,kNoteEb4,kNoteE4,kNoteF4,kNoteGb4,kNoteG4,kNoteAb4,kNoteA4,kNoteBb4,kNoteB4,
+  kNoteC5,kNoteDb5,kNoteD5,kNoteEb5,kNoteE5,kNoteF5,kNoteGb5,kNoteG5,kNoteAb5,kNoteA5,kNoteBb5,kNoteB5,
+  kNoteC6,kNoteDb6,kNoteD6,kNoteEb6,kNoteE6,kNoteF6,kNoteGb6,kNoteG6,kNoteAb6,kNoteA6,kNoteBb6,kNoteB6,
+  kNoteC7,kNoteDb7,kNoteD7,kNoteEb7,kNoteE7,kNoteF7,kNoteGb7,kNoteG7,kNoteAb7,kNoteA7,kNoteBb7,kNoteB7,
+  kNoteC8,kNoteDb8,kNoteD8,kNoteEb8,kNoteE8,kNoteF8,kNoteGb8,kNoteG8,kNoteAb8,kNoteA8,kNoteBb8,kNoteB8,
+};
 
-
-template<class Interface> 
-inline void SafeRelease(Interface **ppInterfaceToRelease) {
-    if (*ppInterfaceToRelease != NULL) {
-        (*ppInterfaceToRelease)->Release();
-        (*ppInterfaceToRelease) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDelete(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
 }
-
-template<class Interface> 
-inline void SafeDeleteArray(Interface **ppInterfaceToDelete) {
-    if (*ppInterfaceToDelete != NULL) {
-        delete [] (*ppInterfaceToDelete);
-        (*ppInterfaceToDelete) = NULL;
-    }
-}
-
 }
