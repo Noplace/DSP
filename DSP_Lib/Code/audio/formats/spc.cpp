@@ -30,7 +30,7 @@ void SPCSynth::Initialize() {
     return;
 
   ram_ = nullptr;
-  dsp_registers_ = nullptr;
+  //dsp_registers_ = nullptr;
   
   InitializeCriticalSection(&me_lock);
   initialized_ = true;
@@ -41,7 +41,7 @@ void SPCSynth::Deinitialize() {
     return;
   DeleteCriticalSection(&me_lock);
   SafeDeleteArray(&ram_);
-  SafeDeleteArray(&dsp_registers_);
+//  SafeDeleteArray(&dsp_registers_);
   initialized_ = false;
 }
 
@@ -61,12 +61,12 @@ void SPCSynth::LoadFromFile(const char* filename) {
 }
 
 void SPCSynth::Load(uint8_t* data, size_t data_size) {
-  player_->Stop();
+  //player_->Stop();
   SafeDeleteArray(&ram_);
-  SafeDeleteArray(&dsp_registers_);
+  //SafeDeleteArray(&dsp_registers_);
   
   ram_= new uint8_t[64*1024];
-  dsp_registers_ = new uint8_t[128];
+  //dsp_registers_ = new uint8_t[128];
   memcpy(&header_,data,sizeof(header_));
   data += sizeof(header_);
   
@@ -75,14 +75,15 @@ void SPCSynth::Load(uint8_t* data, size_t data_size) {
   Reset();
 
   memcpy(ram_,data,64*1024);
-  memcpy(&ram_[0xFFC0],spc::ipl_rom,64);
+  //memcpy(&ram_[0xFFC0],spc::ipl_rom,64);
   data+=64*1024;
-  memcpy(dsp_registers_,data,128);
+  memcpy(dsp.regptr(),data,128);
   data += 128;
   data += 64;
   data += 64;
 
-
+  dsp.set_mem(ram_);
+  spc700.dsp = &dsp;
   spc700.set_mem(ram_);
   spc700.Reset();
   //spc700.WriteMem(0xF4,0xCC);//snes sends signal
@@ -94,10 +95,13 @@ void SPCSynth::Load(uint8_t* data, size_t data_size) {
   spc700.reg.PC = header_.PC;
   spc700.reg.SP = header_.SP_low;
   spc700.reg.PSW.data = header_.PSW;
-  spc700.Execute(10000);
  
 }
 
+
+void SPCSynth::Step() {
+  spc700.ExecuteInstruction();
+}
 
 void SPCSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
 	uint32_t data_offset = 0;
@@ -148,7 +152,7 @@ void SPCSynth::GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* da
   }
   
   if (samples_count == total_samples) {
-    player_->Stop();
+    //player_->Stop();
     return;
   }
 

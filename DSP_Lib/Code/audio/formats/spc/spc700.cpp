@@ -64,6 +64,7 @@ static const uint8_t ipl_rom[64] = {
 SPC700::SPC700() {
   cycles_ = 0;
   ram_ = nullptr;
+
   itable[0xE8] = &SPC700::MOV_A_imm;          itable[0xE6] = &SPC700::MOV_A_Xind;    
   itable[0xBF] = &SPC700::MOV_A_Xindautoinc;  itable[0xE4] = &SPC700::MOV_A_dp;
   itable[0xF4] = &SPC700::MOV_A_dpX;          itable[0xE5] = &SPC700::MOV_A_abs;     
@@ -229,6 +230,33 @@ SPC700::SPC700() {
   itable[0x10] = &SPC700::BPL;
 
 
+
+  itable[0x03] = &SPC700::BBS<0>;
+  itable[0x23] = &SPC700::BBS<1>;
+  itable[0x43] = &SPC700::BBS<2>;
+  itable[0x63] = &SPC700::BBS<3>;
+  itable[0x83] = &SPC700::BBS<4>;
+  itable[0xA3] = &SPC700::BBS<5>;
+  itable[0xC3] = &SPC700::BBS<6>;
+  itable[0xE3] = &SPC700::BBS<7>;
+
+  itable[0x13] = &SPC700::BBC<0>;
+  itable[0x33] = &SPC700::BBC<1>;
+  itable[0x53] = &SPC700::BBC<2>;
+  itable[0x73] = &SPC700::BBC<3>;
+  itable[0x93] = &SPC700::BBC<4>;
+  itable[0xB3] = &SPC700::BBC<5>;
+  itable[0xD3] = &SPC700::BBC<6>;
+  itable[0xF3] = &SPC700::BBC<7>;
+
+  itable[0x2E] = &SPC700::CBNE_dp;
+  itable[0xDE] = &SPC700::CBNE_dpX;
+
+  itable[0x5F] = &SPC700::JMP_abs;
+  itable[0x1F] = &SPC700::JMP_absX;
+
+  itable[0x3F] = &SPC700::CALL;
+
   itable[0x01] = &SPC700::TCALL<0xFFDE>;
   itable[0x11] = &SPC700::TCALL<0xFFDC>;
   itable[0x21] = &SPC700::TCALL<0xFFDA>;
@@ -246,37 +274,109 @@ SPC700::SPC700() {
   itable[0xE1] = &SPC700::TCALL<0xFFC2>;
   itable[0xF1] = &SPC700::TCALL<0xFFC0>;
 
+  itable[0x6F] = &SPC700::RET;
   
+  itable[0x2D] = &SPC700::PUSH_A;
+  itable[0x4D] = &SPC700::PUSH_X;
+  itable[0x6D] = &SPC700::PUSH_Y;
+  itable[0x0D] = &SPC700::PUSH_PSW;
+  itable[0xAE] = &SPC700::POP_A;
+  itable[0xCE] = &SPC700::POP_X;
+  itable[0xEE] = &SPC700::POP_Y;
+  itable[0x8E] = &SPC700::POP_PSW;
 
+  itable[0x02] = &SPC700::SET1<0>;
+  itable[0x22] = &SPC700::SET1<1>;
+  itable[0x42] = &SPC700::SET1<2>;
+  itable[0x62] = &SPC700::SET1<3>;
+  itable[0x82] = &SPC700::SET1<4>;
+  itable[0xA2] = &SPC700::SET1<5>;
+  itable[0xC2] = &SPC700::SET1<6>;
+  itable[0xE2] = &SPC700::SET1<7>;
+
+  itable[0x12] = &SPC700::CLR1<0>;
+  itable[0x32] = &SPC700::CLR1<1>;
+  itable[0x52] = &SPC700::CLR1<2>;
+  itable[0x72] = &SPC700::CLR1<3>;
+  itable[0x92] = &SPC700::CLR1<4>;
+  itable[0xB2] = &SPC700::CLR1<5>;
+  itable[0xD2] = &SPC700::CLR1<6>;
+  itable[0xF2] = &SPC700::CLR1<7>;
+
+  itable[0x0E] = &SPC700::TSET1;
+  itable[0x4E] = &SPC700::TCLR1;
+
+  itable[0x60] = &SPC700::CLRC;
+  itable[0x80] = &SPC700::SETC;
+  itable[0xED] = &SPC700::NOTC;
+  itable[0xE0] = &SPC700::CLRV;
+  itable[0x20] = &SPC700::CLRP;
+  itable[0x40] = &SPC700::SETP;
+  itable[0xA0] = &SPC700::EI;
   itable[0xC0] = &SPC700::DI;
 
   itable[0x00] = &SPC700::NOP;
   itable[0xEF] = &SPC700::SLEEP;
   itable[0xFF] = &SPC700::STOP;
+
+  fopen_s(&debug_fp,"spc700_run.txt","w");
 }
 
 SPC700::~SPC700() {
-
+  fclose(debug_fp);
 }
 
 void SPC700::Reset() {
+  memset(&timers,0,sizeof(timers));
   memset(&reg,0,sizeof(reg));
-  cycles_ = 0;
+  total_cycles_ = 0;
   reg.PC = 0xFFC0;
   stop_ = false;
   sleep_ = false;
+  ctrl_reg.data = 0;
 
 }
 
 void SPC700::ExecuteInstruction() {
   if (stop_) return;
+  cycles_ = 0;
   auto opcode = ReadByte();
   (this->*(itable[opcode]))();
+  total_cycles_ += cycles_;
+  static uint64_t st0_cycles = 0;
+  st0_cycles += cycles_;
+  static uint64_t st1_cycles = 0;
+  st0_cycles += cycles_;
+  static uint64_t st2_cycles = 0;
+  st0_cycles += cycles_;
+  //might implement at tick level
+  if (ctrl_reg.st0 && st0_cycles>=256) {
+    if ( ++timers[0].internal == timers[0].limit) {
+      timers[0].internal = 0;
+      ++timers[0].counter;
+    }
+    st0_cycles -= 256;
+  }
+  if (ctrl_reg.st1 && st1_cycles>=256) {
+    if ( ++timers[0].internal == timers[1].limit) {
+      timers[1].internal = 0;
+      ++timers[1].counter;
+    }
+    st1_cycles -= 256;
+  }
+  if (ctrl_reg.st2 && st2_cycles>=32) {
+    if ( ++timers[2].internal == timers[2].limit) {
+      timers[2].internal = 0;
+      ++timers[2].counter;
+    }
+    st2_cycles -= 32;
+  }
+
 }
 
 void SPC700::Execute(uint64_t cycles) {
-  auto c0 = cycles_;
-  while (cycles_-c0 <= cycles && stop_ == false) {
+  auto c0 = total_cycles_;
+  while (total_cycles_-c0 <= cycles && stop_ == false) {
     ExecuteInstruction();
   }
 }
@@ -285,13 +385,13 @@ uint8_t SPC700::ReadMem(uint16_t addr) {
   if (addr>=0xFFC0) {
     return ipl_rom[addr-0xFFC0];
   } else {
-    
+    uint8_t value = 0;
     switch (addr) {
       case 0xF2:
         
       break;
       case 0xF3:
-        //ram_[addr] = dspread(ram_[0xF2]);
+        ram_[addr] = dsp->Read(ram_[0xF2]);
       break;
       case 0xF4:
       break;
@@ -300,6 +400,26 @@ uint8_t SPC700::ReadMem(uint16_t addr) {
       case 0xF6:
       break;
       case 0xF7:
+      break;
+      case 0xF8:
+      break;
+      case 0xF9:
+      break;
+
+      case 0xFD:
+        value = timers[0].counter;
+        timers[0].counter = 0;
+        ram_[addr] = value;
+      break;
+      case 0xFE:
+        value = timers[1].counter;
+        timers[1].counter = 0;
+        ram_[addr] = value;
+      break;
+      case 0xFF:
+        value = timers[2].counter;
+        timers[2].counter = 0;
+        ram_[addr] = value;
       break;
     }
 
@@ -312,11 +432,30 @@ void SPC700::WriteMem(uint16_t addr, uint8_t value) {
 
     ram_[addr] = value;
     switch (addr) {
+      case 0xF1:
+        ctrl_reg.data = value;
+        if (ctrl_reg.pc10 == 1) {
+          ram_[0xF4] = ram_[0xF5] = 0;
+        }
+        if (ctrl_reg.pc23 == 1) {
+          ram_[0xF6] = ram_[0xF7] = 0;
+        }
+      break;
       case 0xF2:
         
       break;
       case 0xF3:
-        //dspwrite(ram_[0xF2],ram_[0xF3]);
+        dsp->Write(ram_[0xF2],ram_[0xF3]);
+      break;
+
+      case 0xFA:
+        timers[0].limit = value;
+      break;
+      case 0xFB:
+        timers[1].limit = value;
+      break;
+      case 0xFC:
+        timers[2].limit = value;
       break;
     }
   }

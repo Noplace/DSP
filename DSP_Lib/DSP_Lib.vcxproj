@@ -80,6 +80,8 @@
     <ClInclude Include="Code\audio\formats\spc.h" />
     <ClInclude Include="Code\audio\formats\spc\dsp.h" />
     <ClInclude Include="Code\audio\formats\spc\spc700.h" />
+    <ClInclude Include="Code\audio\formats\spc_player.h" />
+    <ClInclude Include="Code\audio\generalplayer.h" />
     <ClInclude Include="Code\audio\midi\midi2.h" />
     <ClInclude Include="Code\audio\output\directsound.h" />
     <ClInclude Include="Code\audio\output\interface.h" />
@@ -120,7 +122,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Code\audio\formats\spc.cpp" />
+    <ClCompile Include="Code\audio\formats\spc\dsp.cpp" />
     <ClCompile Include="Code\audio\formats\spc\spc700.cpp" />
+    <ClCompile Include="Code\audio\generalplayer.cpp" />
     <ClCompile Include="Code\audio\midi\midi2.cpp" />
     <ClCompile Include="Code\audio\output\directsound.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\blit.cpp" />

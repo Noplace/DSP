@@ -138,6 +138,12 @@
     <ClInclude Include="Code\audio\formats\spc\spc700.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Code\audio\generalplayer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\audio\formats\spc_player.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Code\lib.cpp">
@@ -186,6 +192,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Code\audio\formats\spc\spc700.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\audio\generalplayer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\audio\formats\spc\dsp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

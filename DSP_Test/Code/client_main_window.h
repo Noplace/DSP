@@ -37,7 +37,7 @@ class ClientMainWindow {
   dsp::audio::synth::Player*      synth_player_;
   dsp::audio::synth::MidiSynth*   midi_synth_;
   dsp::audio::synth::WaveSynth*   wave_synth_;
-  dsp::audio::formats::SPCSynth* spc_;
+  dsp::audio::formats::SPCPlayer spc_player;
   char title_[MAX_PATH];
   char class_name_[MAX_PATH];
   WNDCLASSEXA window_class_;

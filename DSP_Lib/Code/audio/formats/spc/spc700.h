@@ -76,6 +76,8 @@ struct Registers {
   };
 };
 
+
+
 class SPC700 {
  public:
   Registers reg;
@@ -87,8 +89,29 @@ class SPC700 {
   void set_mem(uint8_t* ram) { ram_ = ram; }
   uint8_t ReadMem(uint16_t addr);
   void WriteMem(uint16_t addr, uint8_t value);
+  
+  DSP* dsp;
  private:
-  uint64_t cycles_;
+  FILE* debug_fp;
+  struct Timer {
+    uint8_t internal;
+    uint8_t limit;
+    uint8_t counter:4;
+  } timers[3];
+  union {
+    struct {
+      uint8_t st0:1;
+      uint8_t st1:1;
+      uint8_t st2:1;
+      uint8_t _unused1:1;
+      uint8_t pc10:1;
+      uint8_t pc23:1;
+      uint8_t _unused2:1;
+      uint8_t _unused3:1;
+    };
+    uint8_t data;
+  } ctrl_reg;
+  uint64_t cycles_,total_cycles_;
   uint8_t* ram_;
   bool stop_,sleep_;
   uint16_t effective_sp() { return 0x100 | reg.SP; }
@@ -108,10 +131,6 @@ class SPC700 {
       reg.PSW.Z = !value;
     if (flags&FlagC)
       reg.PSW.C = (value & 0x100);
-
-    
-
-    
       
   }
 
@@ -123,7 +142,7 @@ class SPC700 {
   uint8_t ReadByte(uint16_t addr) { return ReadMem(addr); }
   uint8_t ReadByte() { return ReadByte(reg.PC++); }
   uint16_t ReadWord(uint16_t addr) { return ReadByte(addr)+(ReadByte(addr+1)<<8); }
-  uint16_t ReadWord() { return ReadWord(reg.PC+=2); }
+  uint16_t ReadWord() { uint16_t value = ReadWord(reg.PC); reg.PC+=2; return value; }
   uint8_t ReadImm() { return ReadByte(); }
 
   uint16_t AddrDP() { 
@@ -174,17 +193,82 @@ class SPC700 {
     return addr+reg.Y; 
   }
 
+  struct DataPair {
+    uint16_t addr;
+    uint8_t value;
+  };
+  DataPair regA() { return {RegA,reg.A}; }
+  DataPair regX() { return {RegX,reg.X}; }
+  DataPair regY() { return {RegY,reg.Y}; }
+  
+//need to change below to make read write based on the proper functions
+
+  DataPair SPC700::mem(uint16_t addr) {
+    return {addr,ram_[addr]};
+  }
+
+  DataPair memImm() {
+    return mem(reg.PC++);
+  }
+  DataPair memXIndirect() {
+    return mem(AddrXIndirect());
+  }
+
+  DataPair memXIndirectAutoInc() {
+    return mem(AddrXIndirectAutoInc());
+  }
+
+  DataPair memYIndirect() {
+    return mem(AddrYIndirect());
+  }
+
+  DataPair memDP() {
+    return mem(AddrDP());
+  }
+
+  DataPair memDPX() {
+    return mem(AddrDPX());
+  }
+
+  DataPair memDPY() {
+    return mem(AddrDPY());
+  }
+
+  DataPair memAbs() {
+    return mem(AddrAbs());
+  }
+
+  DataPair memAbsX() {
+    return mem(AddrAbsX());
+  }
+
+  DataPair memAbsY() {
+    return mem(AddrAbsY());
+  }
+
+  DataPair memDPXIndirect() {
+    return mem(AddrDPXIndirect());
+  }
+
+  DataPair memDPYYndirect() {
+    return mem(AddrDPYIndirect());
+  }
+
+  void WriteReg(uint16_t addr, uint8_t value) {
+    reg.reg[addr] = value;
+  }
+
   typedef void (SPC700::*Instruction)();
   Instruction itable[0xFF];
 
-  template<RegIndex regindex,class ReadOP,class UpdateOP, uint8_t cycles>
+  /*template<RegIndex regindex,class ReadOP,class UpdateOP, uint8_t cycles>
   void MOV() {
     ReadOP readOp;
     UpdateOP update;
     reg.reg[regindex] = readOp();
     update(reg.reg[regindex]);
     cycles_ += cycles;
-  }
+  }*/
 
   void MOV_A_imm();
   void MOV_A_Xind();
@@ -229,116 +313,66 @@ class SPC700 {
   void MOV_SP_X();
   void MOV_dp_dp();
   void MOV_dp_imm();
-
-  uint8_t& regA() { return reg.A; }
-  uint8_t& regX() { return reg.X; }
-  uint8_t& regY() { return reg.Y; }
+  
   
 
-  uint8_t& SPC700::mem(uint16_t addr) {
-    return ram_[addr];
-  }
-
-  uint8_t& memXIndirect() {
-    return mem(AddrXIndirect());
-  }
-
-  uint8_t& memXIndirectAutoInc() {
-    return mem(AddrXIndirectAutoInc());
-  }
-
-  uint8_t& memYIndirect() {
-    return mem(AddrYIndirect());
-  }
-
-  uint8_t& memDP() {
-    return mem(AddrDP());
-  }
-
-  uint8_t& memDPX() {
-    return mem(AddrDPX());
-  }
-
-  uint8_t& memDPY() {
-    return mem(AddrDPY());
-  }
-
-  uint8_t& memAbs() {
-    return mem(AddrAbs());
-  }
-
-  uint8_t& memAbsX() {
-    return mem(AddrAbsX());
-  }
-
-  uint8_t& memAbsY() {
-    return mem(AddrAbsY());
-  }
-
-  uint8_t& memDPXIndirect() {
-    return mem(AddrDPXIndirect());
-  }
-
-  uint8_t& memDPYYndirect() {
-    return mem(AddrDPYIndirect());
-  }
-
-  template<uint8_t cycles,class OP1,class OP2>
-  void ADC(OP1 op1, OP2 op2) {
-    uint8_t& m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m + n + reg.PSW.C;
-    UpdateFlags<FlagN|FlagV|FlagH|FlagZ|FlagC>(result,m,n);
-    m = result & 0xFF;
+  //typedef void (*SPC700::UpdateFunc)(uint16_t,uint8_t);
+  template<uint8_t cycles,class OP1,class OP2, class UpdateFunc>
+  void ADC(OP1 op1, OP2 op2,UpdateFunc updateFunc) {
+    DataPair m = (this->*op1)();
+    DataPair n =  (this->*op2)();
+    uint16_t result = m.value + n.value + reg.PSW.C;
+    UpdateFlags<FlagN|FlagV|FlagH|FlagZ|FlagC>(result,m.value,n.value);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void ADC_A_imm() { return ADC<2>(&SPC700::regA,&SPC700::ReadImm); }
-  void ADC_A_Xind() { return ADC<3>(&SPC700::regA,&SPC700::memXIndirect); }
-  void ADC_A_dp() { return ADC<3>(&SPC700::regA,&SPC700::memDP); }
-  void ADC_A_dpX() { return ADC<4>(&SPC700::regA,&SPC700::memDPX); }
-  void ADC_A_abs() { return ADC<4>(&SPC700::regA,&SPC700::memAbs); }
-  void ADC_A_absX() { return ADC<5>(&SPC700::regA,&SPC700::memAbsX); }
-  void ADC_A_absY() { return ADC<5>(&SPC700::regA,&SPC700::memAbsY); }
-  void ADC_A_dpXind()  { return ADC<6>(&SPC700::regA,&SPC700::memDPXIndirect); }
-  void ADC_A_dpYind(){ return ADC<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
-  void ADC_Xind_Yind() { return ADC<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
-  void ADC_dp_dp() { return ADC<6>(&SPC700::memDP,&SPC700::memDP); }
-  void ADC_dp_imm() { return ADC<5>(&SPC700::memDP,&SPC700::ReadImm); }
+  void ADC_A_imm() { return ADC<2>(&SPC700::regA,&SPC700::memImm,&SPC700::WriteReg); }
+  void ADC_A_Xind() { return ADC<3>(&SPC700::regA,&SPC700::memXIndirect,&SPC700::WriteReg); }
+  void ADC_A_dp() { return ADC<3>(&SPC700::regA,&SPC700::memDP,&SPC700::WriteReg); }
+  void ADC_A_dpX() { return ADC<4>(&SPC700::regA,&SPC700::memDPX,&SPC700::WriteReg); }
+  void ADC_A_abs() { return ADC<4>(&SPC700::regA,&SPC700::memAbs,&SPC700::WriteReg); }
+  void ADC_A_absX() { return ADC<5>(&SPC700::regA,&SPC700::memAbsX,&SPC700::WriteReg); }
+  void ADC_A_absY() { return ADC<5>(&SPC700::regA,&SPC700::memAbsY,&SPC700::WriteReg); }
+  void ADC_A_dpXind()  { return ADC<6>(&SPC700::regA,&SPC700::memDPXIndirect,&SPC700::WriteReg); }
+  void ADC_A_dpYind(){ return ADC<6>(&SPC700::regA,&SPC700::memDPYYndirect,&SPC700::WriteReg); }
+  void ADC_Xind_Yind() { return ADC<5>(&SPC700::memXIndirect,&SPC700::memYIndirect,&SPC700::WriteMem); }
+  void ADC_dp_dp() { return ADC<6>(&SPC700::memDP,&SPC700::memDP,&SPC700::WriteMem); }
+  void ADC_dp_imm() { return ADC<5>(&SPC700::memDP,&SPC700::memImm,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1,class OP2>
-  void SBC(OP1 op1, OP2 op2) {
-    uint8_t& m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m - n + !reg.PSW.C;
-    UpdateFlags<FlagN|FlagV|FlagH|FlagZ|FlagC>(result,m,n);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class OP2,class UpdateFunc>
+  void SBC(OP1 op1, OP2 op2,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    auto n =  (this->*op2)();
+    uint16_t result = m.value - n.value + !reg.PSW.C;
+    UpdateFlags<FlagN|FlagV|FlagH|FlagZ|FlagC>(result,m.value,n.value);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void SBC_A_imm() { return SBC<2>(&SPC700::regA,&SPC700::ReadImm); }
-  void SBC_A_Xind() { return SBC<3>(&SPC700::regA,&SPC700::memXIndirect); }
-  void SBC_A_dp() { return SBC<3>(&SPC700::regA,&SPC700::memDP); }
-  void SBC_A_dpX() { return SBC<4>(&SPC700::regA,&SPC700::memDPX); }
-  void SBC_A_abs() { return SBC<4>(&SPC700::regA,&SPC700::memAbs); }
-  void SBC_A_absX() { return SBC<5>(&SPC700::regA,&SPC700::memAbsX); }
-  void SBC_A_absY() { return SBC<5>(&SPC700::regA,&SPC700::memAbsY); }
-  void SBC_A_dpXind()  { return SBC<6>(&SPC700::regA,&SPC700::memDPXIndirect); }
-  void SBC_A_dpYind(){ return SBC<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
-  void SBC_Xind_Yind() { return SBC<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
-  void SBC_dp_dp() { return SBC<6>(&SPC700::memDP,&SPC700::memDP); }
-  void SBC_dp_imm() { return SBC<5>(&SPC700::memDP,&SPC700::ReadImm); }
+  void SBC_A_imm() { return SBC<2>(&SPC700::regA,&SPC700::memImm,&SPC700::WriteReg); }
+  void SBC_A_Xind() { return SBC<3>(&SPC700::regA,&SPC700::memXIndirect,&SPC700::WriteReg); }
+  void SBC_A_dp() { return SBC<3>(&SPC700::regA,&SPC700::memDP,&SPC700::WriteReg); }
+  void SBC_A_dpX() { return SBC<4>(&SPC700::regA,&SPC700::memDPX,&SPC700::WriteReg); }
+  void SBC_A_abs() { return SBC<4>(&SPC700::regA,&SPC700::memAbs,&SPC700::WriteReg); }
+  void SBC_A_absX() { return SBC<5>(&SPC700::regA,&SPC700::memAbsX,&SPC700::WriteReg); }
+  void SBC_A_absY() { return SBC<5>(&SPC700::regA,&SPC700::memAbsY,&SPC700::WriteReg); }
+  void SBC_A_dpXind()  { return SBC<6>(&SPC700::regA,&SPC700::memDPXIndirect,&SPC700::WriteReg); }
+  void SBC_A_dpYind(){ return SBC<6>(&SPC700::regA,&SPC700::memDPYYndirect,&SPC700::WriteReg); }
+  void SBC_Xind_Yind() { return SBC<5>(&SPC700::memXIndirect,&SPC700::memYIndirect,&SPC700::WriteMem); }
+  void SBC_dp_dp() { return SBC<6>(&SPC700::memDP,&SPC700::memDP,&SPC700::WriteMem); }
+  void SBC_dp_imm() { return SBC<5>(&SPC700::memDP,&SPC700::memImm,&SPC700::WriteMem); }
 
   template<uint8_t cycles,class OP1,class OP2>
   void CMP(OP1 op1, OP2 op2) {
-    uint8_t m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m - n;
-    UpdateFlags<FlagN|FlagZ|FlagC>(result,m,n);
+    auto m = (this->*op1)();
+    auto n =  (this->*op2)();
+    uint16_t result = m.value - n.value;
+    UpdateFlags<FlagN|FlagZ|FlagC>(result,m.value,n.value);
     cycles_ += cycles;
   }
 
-  void CMP_A_imm()     { return CMP<2>(&SPC700::regA,&SPC700::ReadImm); }
+  void CMP_A_imm()     { return CMP<2>(&SPC700::regA,&SPC700::memImm); }
   void CMP_A_Xind()    { return CMP<3>(&SPC700::regA,&SPC700::memXIndirect); }
   void CMP_A_dp()      { return CMP<3>(&SPC700::regA,&SPC700::memDP); }
   void CMP_A_dpX()     { return CMP<4>(&SPC700::regA,&SPC700::memDPX); }
@@ -349,176 +383,176 @@ class SPC700 {
   void CMP_A_dpYind()  { return CMP<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
   void CMP_Xind_Yind() { return CMP<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
   void CMP_dp_dp()     { return CMP<6>(&SPC700::memDP,&SPC700::memDP); }
-  void CMP_dp_imm()    { return CMP<5>(&SPC700::memDP,&SPC700::ReadImm); }
-  void CMP_X_imm()     { return CMP<2>(&SPC700::regX,&SPC700::ReadImm); }
+  void CMP_dp_imm()    { return CMP<5>(&SPC700::memDP,&SPC700::memImm); }
+  void CMP_X_imm()     { return CMP<2>(&SPC700::regX,&SPC700::memImm); }
   void CMP_X_dp()      { return CMP<3>(&SPC700::regX,&SPC700::memDP); }
   void CMP_X_abs()     { return CMP<4>(&SPC700::regX,&SPC700::memAbs); }
-  void CMP_Y_imm()     { return CMP<2>(&SPC700::regY,&SPC700::ReadImm); }
+  void CMP_Y_imm()     { return CMP<2>(&SPC700::regY,&SPC700::memImm); }
   void CMP_Y_dp()      { return CMP<3>(&SPC700::regY,&SPC700::memDP); }
   void CMP_Y_abs()     { return CMP<4>(&SPC700::regY,&SPC700::memAbs); }
 
-  template<uint8_t cycles,class OP1,class OP2>
-  void AND(OP1 op1, OP2 op2) {
-    uint8_t& m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m & n;
-    UpdateFlags<FlagN|FlagZ>(result,m,n);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class OP2,class UpdateFunc>
+  void AND(OP1 op1, OP2 op2,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    auto n =  (this->*op2)();
+    uint16_t result = m.value & n.value;
+    UpdateFlags<FlagN|FlagZ>(result,m.value,n.value);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void AND_A_imm()     { return AND<2>(&SPC700::regA,&SPC700::ReadImm); }
-  void AND_A_Xind()    { return AND<3>(&SPC700::regA,&SPC700::memXIndirect); }
-  void AND_A_dp()      { return AND<3>(&SPC700::regA,&SPC700::memDP); }
-  void AND_A_dpX()     { return AND<4>(&SPC700::regA,&SPC700::memDPX); }
-  void AND_A_abs()     { return AND<4>(&SPC700::regA,&SPC700::memAbs); }
-  void AND_A_absX()    { return AND<5>(&SPC700::regA,&SPC700::memAbsX); }
-  void AND_A_absY()    { return AND<5>(&SPC700::regA,&SPC700::memAbsY); }
-  void AND_A_dpXind()  { return AND<6>(&SPC700::regA,&SPC700::memDPXIndirect); }
-  void AND_A_dpYind()  { return AND<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
-  void AND_Xind_Yind() { return AND<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
-  void AND_dp_dp()     { return AND<6>(&SPC700::memDP,&SPC700::memDP); }
-  void AND_dp_imm()    { return AND<5>(&SPC700::memDP,&SPC700::ReadImm); }
+  void AND_A_imm()     { return AND<2>(&SPC700::regA,&SPC700::memImm,&SPC700::WriteReg); }
+  void AND_A_Xind()    { return AND<3>(&SPC700::regA,&SPC700::memXIndirect,&SPC700::WriteReg); }
+  void AND_A_dp()      { return AND<3>(&SPC700::regA,&SPC700::memDP,&SPC700::WriteReg); }
+  void AND_A_dpX()     { return AND<4>(&SPC700::regA,&SPC700::memDPX,&SPC700::WriteReg); }
+  void AND_A_abs()     { return AND<4>(&SPC700::regA,&SPC700::memAbs,&SPC700::WriteReg); }
+  void AND_A_absX()    { return AND<5>(&SPC700::regA,&SPC700::memAbsX,&SPC700::WriteReg); }
+  void AND_A_absY()    { return AND<5>(&SPC700::regA,&SPC700::memAbsY,&SPC700::WriteReg); }
+  void AND_A_dpXind()  { return AND<6>(&SPC700::regA,&SPC700::memDPXIndirect,&SPC700::WriteReg); }
+  void AND_A_dpYind()  { return AND<6>(&SPC700::regA,&SPC700::memDPYYndirect,&SPC700::WriteReg); }
+  void AND_Xind_Yind() { return AND<5>(&SPC700::memXIndirect,&SPC700::memYIndirect,&SPC700::WriteMem); }
+  void AND_dp_dp()     { return AND<6>(&SPC700::memDP,&SPC700::memDP,&SPC700::WriteMem); }
+  void AND_dp_imm()    { return AND<5>(&SPC700::memDP,&SPC700::memImm,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1,class OP2>
-  void OR(OP1 op1, OP2 op2) {
-    uint8_t& m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m | n;
-    UpdateFlags<FlagN|FlagZ>(result,m,n);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class OP2,class UpdateFunc>
+  void OR(OP1 op1, OP2 op2,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    auto n =  (this->*op2)();
+    uint16_t result = m.value | n.value;
+    UpdateFlags<FlagN|FlagZ>(result,m.value,n.value);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void OR_A_imm()     { return OR<2>(&SPC700::regA,&SPC700::ReadImm); }
-  void OR_A_Xind()    { return OR<3>(&SPC700::regA,&SPC700::memXIndirect); }
-  void OR_A_dp()      { return OR<3>(&SPC700::regA,&SPC700::memDP); }
-  void OR_A_dpX()     { return OR<4>(&SPC700::regA,&SPC700::memDPX); }
-  void OR_A_abs()     { return OR<4>(&SPC700::regA,&SPC700::memAbs); }
-  void OR_A_absX()    { return OR<5>(&SPC700::regA,&SPC700::memAbsX); }
-  void OR_A_absY()    { return OR<5>(&SPC700::regA,&SPC700::memAbsY); }
-  void OR_A_dpXind()  { return OR<6>(&SPC700::regA,&SPC700::memDPXIndirect); }
-  void OR_A_dpYind()  { return OR<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
-  void OR_Xind_Yind() { return OR<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
-  void OR_dp_dp()     { return OR<6>(&SPC700::memDP,&SPC700::memDP); }
-  void OR_dp_imm()    { return OR<5>(&SPC700::memDP,&SPC700::ReadImm); }
+  void OR_A_imm()     { return OR<2>(&SPC700::regA,&SPC700::memImm,&SPC700::WriteReg); }
+  void OR_A_Xind()    { return OR<3>(&SPC700::regA,&SPC700::memXIndirect,&SPC700::WriteReg); }
+  void OR_A_dp()      { return OR<3>(&SPC700::regA,&SPC700::memDP,&SPC700::WriteReg); }
+  void OR_A_dpX()     { return OR<4>(&SPC700::regA,&SPC700::memDPX,&SPC700::WriteReg); }
+  void OR_A_abs()     { return OR<4>(&SPC700::regA,&SPC700::memAbs,&SPC700::WriteReg); }
+  void OR_A_absX()    { return OR<5>(&SPC700::regA,&SPC700::memAbsX,&SPC700::WriteReg); }
+  void OR_A_absY()    { return OR<5>(&SPC700::regA,&SPC700::memAbsY,&SPC700::WriteReg); }
+  void OR_A_dpXind()  { return OR<6>(&SPC700::regA,&SPC700::memDPXIndirect,&SPC700::WriteReg); }
+  void OR_A_dpYind()  { return OR<6>(&SPC700::regA,&SPC700::memDPYYndirect,&SPC700::WriteReg); }
+  void OR_Xind_Yind() { return OR<5>(&SPC700::memXIndirect,&SPC700::memYIndirect,&SPC700::WriteMem); }
+  void OR_dp_dp()     { return OR<6>(&SPC700::memDP,&SPC700::memDP,&SPC700::WriteMem); }
+  void OR_dp_imm()    { return OR<5>(&SPC700::memDP,&SPC700::memImm,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1,class OP2>
-  void EOR(OP1 op1, OP2 op2) {
-    uint8_t& m = (this->*op1)();
-    uint8_t n =  (this->*op2)();
-    uint16_t result = m ^ n;
-    UpdateFlags<FlagN|FlagZ>(result,m,n);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class OP2,class UpdateFunc>
+  void EOR(OP1 op1, OP2 op2,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    auto n =  (this->*op2)();
+    uint16_t result = m.value ^ n.value;
+    UpdateFlags<FlagN|FlagZ>(result,m.value,n.value);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void EOR_A_imm()     { return EOR<2>(&SPC700::regA,&SPC700::ReadImm); }
-  void EOR_A_Xind()    { return EOR<3>(&SPC700::regA,&SPC700::memXIndirect); }
-  void EOR_A_dp()      { return EOR<3>(&SPC700::regA,&SPC700::memDP); }
-  void EOR_A_dpX()     { return EOR<4>(&SPC700::regA,&SPC700::memDPX); }
-  void EOR_A_abs()     { return EOR<4>(&SPC700::regA,&SPC700::memAbs); }
-  void EOR_A_absX()    { return EOR<5>(&SPC700::regA,&SPC700::memAbsX); }
-  void EOR_A_absY()    { return EOR<5>(&SPC700::regA,&SPC700::memAbsY); }
-  void EOR_A_dpXind()  { return EOR<6>(&SPC700::regA,&SPC700::memDPXIndirect); }
-  void EOR_A_dpYind()  { return EOR<6>(&SPC700::regA,&SPC700::memDPYYndirect); }
-  void EOR_Xind_Yind() { return EOR<5>(&SPC700::memXIndirect,&SPC700::memYIndirect); }
-  void EOR_dp_dp()     { return EOR<6>(&SPC700::memDP,&SPC700::memDP); }
-  void EOR_dp_imm()    { return EOR<5>(&SPC700::memDP,&SPC700::ReadImm); }
+  void EOR_A_imm()     { return EOR<2>(&SPC700::regA,&SPC700::memImm,&SPC700::WriteReg); }
+  void EOR_A_Xind()    { return EOR<3>(&SPC700::regA,&SPC700::memXIndirect,&SPC700::WriteReg); }
+  void EOR_A_dp()      { return EOR<3>(&SPC700::regA,&SPC700::memDP,&SPC700::WriteReg); }
+  void EOR_A_dpX()     { return EOR<4>(&SPC700::regA,&SPC700::memDPX,&SPC700::WriteReg); }
+  void EOR_A_abs()     { return EOR<4>(&SPC700::regA,&SPC700::memAbs,&SPC700::WriteReg); }
+  void EOR_A_absX()    { return EOR<5>(&SPC700::regA,&SPC700::memAbsX,&SPC700::WriteReg); }
+  void EOR_A_absY()    { return EOR<5>(&SPC700::regA,&SPC700::memAbsY,&SPC700::WriteReg); }
+  void EOR_A_dpXind()  { return EOR<6>(&SPC700::regA,&SPC700::memDPXIndirect,&SPC700::WriteReg); }
+  void EOR_A_dpYind()  { return EOR<6>(&SPC700::regA,&SPC700::memDPYYndirect,&SPC700::WriteReg); }
+  void EOR_Xind_Yind() { return EOR<5>(&SPC700::memXIndirect,&SPC700::memYIndirect,&SPC700::WriteMem); }
+  void EOR_dp_dp()     { return EOR<6>(&SPC700::memDP,&SPC700::memDP,&SPC700::WriteMem); }
+  void EOR_dp_imm()    { return EOR<5>(&SPC700::memDP,&SPC700::memImm,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1>
-  void INC(OP1 op1) {
-    uint8_t& m = (this->*op1)();
-    uint16_t result = ++m;
-    UpdateFlags<FlagN|FlagZ>(result,m,0);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void INC(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    uint16_t result = ++m.value;
+    UpdateFlags<FlagN|FlagZ>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void INC_A()     { return INC<2>(&SPC700::regA); }
-  void INC_dp()    { return INC<4>(&SPC700::memDP); }
-  void INC_dpX()   { return INC<5>(&SPC700::memDPX); }
-  void INC_abs()   { return INC<5>(&SPC700::memAbs); }
-  void INC_X()     { return INC<2>(&SPC700::regX); }
-  void INC_Y()     { return INC<2>(&SPC700::regY); }
+  void INC_A()     { return INC<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void INC_dp()    { return INC<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void INC_dpX()   { return INC<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void INC_abs()   { return INC<5>(&SPC700::memAbs,&SPC700::WriteMem); }
+  void INC_X()     { return INC<2>(&SPC700::regX,&SPC700::WriteReg); }
+  void INC_Y()     { return INC<2>(&SPC700::regY,&SPC700::WriteReg); }
 
-  template<uint8_t cycles,class OP1>
-  void DEC(OP1 op1) {
-    uint8_t& m = (this->*op1)();
-    uint16_t result = --m;
-    UpdateFlags<FlagN|FlagZ>(result,m,0);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void DEC(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    uint16_t result = --m.value;
+    UpdateFlags<FlagN|FlagZ>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void DEC_A()     { return DEC<2>(&SPC700::regA); }
-  void DEC_dp()    { return DEC<4>(&SPC700::memDP); }
-  void DEC_dpX()   { return DEC<5>(&SPC700::memDPX); }
-  void DEC_abs()   { return DEC<5>(&SPC700::memAbs); }
-  void DEC_X()     { return DEC<2>(&SPC700::regX); }
-  void DEC_Y()     { return DEC<2>(&SPC700::regY); }
+  void DEC_A()     { return DEC<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void DEC_dp()    { return DEC<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void DEC_dpX()   { return DEC<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void DEC_abs()   { return DEC<5>(&SPC700::memAbs,&SPC700::WriteMem); }
+  void DEC_X()     { return DEC<2>(&SPC700::regX,&SPC700::WriteReg); }
+  void DEC_Y()     { return DEC<2>(&SPC700::regY,&SPC700::WriteReg); }
 
-  template<uint8_t cycles,class OP1>
-  void ASL(OP1 op1) {
-    uint8_t& m = (this->*op1)();
-    reg.PSW.C = m & 0x80;
-    uint16_t result = m << 1;
-    UpdateFlags<FlagN|FlagZ|FlagC>(result,m,0);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void ASL(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    reg.PSW.C = m.value & 0x80;
+    uint16_t result = m.value << 1;
+    UpdateFlags<FlagN|FlagZ|FlagC>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void ASL_A()     { return ASL<2>(&SPC700::regA); }
-  void ASL_dp()    { return ASL<4>(&SPC700::memDP); }
-  void ASL_dpX()   { return ASL<5>(&SPC700::memDPX); }
-  void ASL_abs()   { return ASL<5>(&SPC700::memAbs); }
+  void ASL_A()     { return ASL<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void ASL_dp()    { return ASL<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void ASL_dpX()   { return ASL<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void ASL_abs()   { return ASL<5>(&SPC700::memAbs,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1>
-  void LSR(OP1 op1) {
-    uint8_t& m = (this->*op1)();
-    reg.PSW.C = m & 1;
-    uint16_t result = m >> 1;
-    UpdateFlags<FlagN|FlagZ|FlagC>(result,m,0);
-    m = result & 0xFF;
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void LSR(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
+    reg.PSW.C = m.value & 1;
+    uint16_t result = m.value >> 1;
+    UpdateFlags<FlagN|FlagZ|FlagC>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void LSR_A()     { return LSR<2>(&SPC700::regA); }
-  void LSR_dp()    { return LSR<4>(&SPC700::memDP); }
-  void LSR_dpX()   { return LSR<5>(&SPC700::memDPX); }
-  void LSR_abs()   { return LSR<5>(&SPC700::memAbs); }
+  void LSR_A()     { return LSR<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void LSR_dp()    { return LSR<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void LSR_dpX()   { return LSR<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void LSR_abs()   { return LSR<5>(&SPC700::memAbs,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1>
-  void ROL(OP1 op1) {
-    uint8_t& m = (this->*op1)();
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void ROL(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
     uint8_t oldC = reg.PSW.C;
-    reg.PSW.C = m & 0x80;
-    uint16_t result = (m << 1) | oldC;
-    UpdateFlags<FlagN|FlagZ|FlagC>(result,m,0);
-    m = result  & 0xFF;
+    reg.PSW.C = m.value & 0x80;
+    uint16_t result = (m.value << 1) | oldC;
+    UpdateFlags<FlagN|FlagZ|FlagC>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void ROL_A()     { return ROL<2>(&SPC700::regA); }
-  void ROL_dp()    { return ROL<4>(&SPC700::memDP); }
-  void ROL_dpX()   { return ROL<5>(&SPC700::memDPX); }
-  void ROL_abs()   { return ROL<5>(&SPC700::memAbs); }
+  void ROL_A()     { return ROL<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void ROL_dp()    { return ROL<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void ROL_dpX()   { return ROL<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void ROL_abs()   { return ROL<5>(&SPC700::memAbs,&SPC700::WriteMem); }
 
-  template<uint8_t cycles,class OP1>
-  void ROR(OP1 op1) {
-    uint8_t& m = (this->*op1)();
+  template<uint8_t cycles,class OP1,class UpdateFunc>
+  void ROR(OP1 op1,UpdateFunc updateFunc) {
+    auto m = (this->*op1)();
     uint8_t oldC = reg.PSW.C;
-    reg.PSW.C = m & 0x1;
-    uint16_t result = (m >> 1) | (oldC<<7);
-    UpdateFlags<FlagN|FlagZ|FlagC>(result,m,0);
-    m = result & 0xFF;
+    reg.PSW.C = m.value & 0x1;
+    uint16_t result = (m.value >> 1) | (oldC<<7);
+    UpdateFlags<FlagN|FlagZ|FlagC>(result,m.value,0);
+    (this->*(updateFunc))(m.addr,result & 0xFF);
     cycles_ += cycles;
   }
 
-  void ROR_A()     { return ROR<2>(&SPC700::regA); }
-  void ROR_dp()    { return ROR<4>(&SPC700::memDP); }
-  void ROR_dpX()   { return ROR<5>(&SPC700::memDPX); }
-  void ROR_abs()   { return ROR<5>(&SPC700::memAbs); }
+  void ROR_A()     { return ROR<2>(&SPC700::regA,&SPC700::WriteReg); }
+  void ROR_dp()    { return ROR<4>(&SPC700::memDP,&SPC700::WriteMem); }
+  void ROR_dpX()   { return ROR<5>(&SPC700::memDPX,&SPC700::WriteMem); }
+  void ROR_abs()   { return ROR<5>(&SPC700::memAbs,&SPC700::WriteMem); }
 
   void XCN() {
     uint8_t n1 = (reg.A & 0xF) << 4;
@@ -624,14 +658,148 @@ class SPC700 {
   void BMI() {    Branch([this](){ return reg.PSW.N == 1; });  }
   void BPL() {    Branch([this](){ return reg.PSW.N == 0; });  }
 
+  template<uint8_t bit>
+  void BBS() {
+    auto mem = memDP();cycles_ += 3;
+    Branch([this,mem](){ return mem.value&(1<<bit); });
+  }
+
+  template<uint8_t bit>
+  void BBC() {
+    auto mem = memDP();cycles_ += 3;
+    Branch([this,mem](){ return (mem.value&(1<<bit))==0; });
+  }
+
+
+  void CBNE_dp() {
+    auto mem = memDP();cycles_ += 3;
+    Branch([this,mem](){ return reg.A != mem.value; });
+  }
+
+
+  void CBNE_dpX() {
+    auto mem = memDPX();cycles_ += 4;
+    Branch([this,mem](){ return reg.A != mem.value; });
+  }
+  
+  void JMP_abs() {
+    uint16_t addr = AddrAbs();
+    reg.PC = addr;
+    cycles_ += 3;
+  }
+
+
+  void JMP_absX() {
+    uint16_t addr = AddrAbsX();
+    reg.PC = addr;
+    cycles_ += 6;
+  }
+
+  void CALL() {
+    uint16_t addr = ReadWord();
+    WriteMem(0x100|(reg.SP--),reg.PC>>8);
+    WriteMem(0x100|(reg.SP--),reg.PC&0xFF);
+    reg.PC = addr;
+    cycles_ += 8;
+  }
+
+
+  void RET() {
+    uint8_t PCL = ReadMem((++reg.SP)|0x100);
+    uint8_t PCH = ReadMem((++reg.SP)|0x100);
+    reg.PC = (PCH<<8)|PCL;
+    cycles_ += 5;
+  }
 
   template<uint16_t addr>
   void TCALL() { reg.PC = addr; cycles_+=8; }
 
+  void PUSH_A() {
+    WriteMem(0x100|(reg.SP--),reg.A);
+    cycles_ += 4;
+  }
+
+  void PUSH_X() {
+    WriteMem(0x100|(reg.SP--),reg.X);
+    cycles_ += 4;
+  }
+
+  void PUSH_Y() {
+    WriteMem(0x100|(reg.SP--),reg.Y);
+    cycles_ += 4;
+  }
+
+  void PUSH_PSW() {
+    WriteMem(0x100|(reg.SP--),reg.PSW.data);
+    cycles_ += 4;
+  }
+
+  void POP_A() {
+    reg.A = ReadMem((++reg.SP)|0x100);
+    cycles_ += 4;
+  }
+
+  void POP_X() {
+    reg.X = ReadMem((++reg.SP)|0x100);
+    cycles_ += 4;
+  }
+
+  void POP_Y() {
+    reg.Y = ReadMem((++reg.SP)|0x100);
+    cycles_ += 4;
+  }
+
+  void POP_PSW() {
+    reg.PSW.data = ReadMem((++reg.SP)|0x100);
+    cycles_ += 4;
+  }
 
 
 
-  void DI() { /* no interrupts anyway */ }
+
+
+  template<uint8_t bit>
+  void SET1() {
+    auto m = memDP();
+    m.value |= 1<<bit;
+    WriteMem(m.addr,m.value);
+    cycles_ += 4;
+  }
+
+  template<uint8_t bit>
+  void CLR1() {
+    auto m = memDP();
+    m.value &= ~(1<<bit);
+    WriteMem(m.addr,m.value);
+    cycles_ += 4;
+  }
+
+
+  void TSET1() {
+    auto m = memAbs();
+    m.value |= reg.A;
+    WriteMem(m.addr,m.value);
+    UpdateFlags<FlagN|FlagZ>(reg.A-m.value);
+    cycles_ += 6;
+  }
+
+
+  void TCLR1() {
+    auto m = memAbs();
+    m.value &= ~reg.A;
+    WriteMem(m.addr,m.value);
+    UpdateFlags<FlagN|FlagZ>(reg.A-m.value);
+    cycles_ += 6;
+  }
+
+  void CLRC() { reg.PSW.C = 0; cycles_+=2; }
+  void SETC() { reg.PSW.C = 1; cycles_+=2; }
+  void NOTC() { reg.PSW.C = !reg.PSW.C; cycles_+=3; }
+  void CLRV() { reg.PSW.V = 0; cycles_+=2; }
+  void CLRP() { reg.PSW.P = 0; cycles_+=2; }
+  void SETP() { reg.PSW.P = 1; cycles_+=2; }
+  void EI() { reg.PSW._unused1 = 1; cycles_+=2;/* no interrupts anyway */ }
+  void DI() { reg.PSW._unused1 = 0; cycles_+=2;/* no interrupts anyway */ }
 
   void NOP() { }
   void SLEEP() { sleep_ = true; }

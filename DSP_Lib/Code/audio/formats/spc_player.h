@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2015 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -19,57 +19,67 @@
 #pragma once
 
 
-#include <vector>
-#include <stdlib.h>
-#include <windows.h>
-#include <math.h>
-#include "types.h"
-#include "timer.h"
-#include "io.h"
 
-#include "audio/midi/midi2.h"
-#include "audio/output/interface.h"
-#include "audio/output/directsound.h"
+namespace dsp {
+namespace audio {
+namespace formats {
 
-#include "audio/generalplayer.h"
+class SPCPlayer : public GeneralPlayer {
+ public:
+  double song_length_ms;
+  SPCPlayer() : GeneralPlayer() {
+  }
+  virtual ~SPCPlayer() {
+    
+  }
+  void Initialize() {
+    GeneralPlayer::Initialize();
+    song_counter_ms = 0;
+    auto sample_rate = audio_interface_->wave_format().nSamplesPerSec;
 
-#include "audio/synth/base.h"
-#include "audio/synth/types.h"
-#include "audio/synth/misc.h"
-#include "audio/synth/component.h"
-#include "audio/synth/util.h"
-#include "audio/synth/wavetable.h"
-#include "audio/synth/synth.h"
-#include "audio/synth/adsr.h"
+    {
+      output_buffer_samples_ = audio_interface_->buffer_size()/sizeof(short); //size in samples
+      output_buffer_length_ms_ = output_buffer_samples_ / double(sample_rate*audio_interface_->wave_format().nChannels*0.001); //400.0;//400ms
+      output_buffer = new short[output_buffer_samples_]; 
+      mix_buffer = new real_t[output_buffer_samples_]; 
+    }
 
-#include "audio/synth/filters/lowpass.h"
-#include "audio/synth/filters/chebyshev_filter.h"
-#include "audio/synth/filters/iir_filter.h"
-#include "audio/synth/effects/effect.h"
-#include "audio/synth/effects/delay.h"
+    synth_.set_sample_rate(sample_rate);
+    synth_.Initialize();
+  }
+  virtual void Deinitialize() {
+    synth_.Deinitialize();
+    SafeDeleteArray(&mix_buffer);
+    SafeDeleteArray(&output_buffer);
+  }
 
-#include "audio/synth/oscillators/oscillator.h"
-#include "audio/synth/oscillators/sine_oscillator.h"
-#include "audio/synth/oscillators/triangle_oscillator.h"
-#include "audio/synth/oscillators/sawtooth_oscillator.h"
-#include "audio/synth/oscillators/square_oscillator.h"
-#include "audio/synth/oscillators/exp_oscillator.h"
+  void OnPause() {
+    memset(output_buffer,0,output_buffer_samples_*sizeof(short));
+    audio_interface_->Write(output_buffer,output_buffer_samples_*sizeof(short));
+  }
+  void OnPlay() {
+  }
+  void OnStop() {
+    synth_.Reset();
+    song_counter_ms = 0;
+  }
+  void LoadFromFile(const char* filename) {
+    Stop();
+    synth_.LoadFromFile(filename);
+  }
+  void LoopFunc() {
+   synth_.Step(); 
+  }
+ private:
+  SPCSynth synth_;
+  real_t* mix_buffer;
+  short* output_buffer;
+  double song_pos_ms,song_counter_ms,output_buffer_length_ms_;
+  uint32_t output_buffer_samples_;
 
-#include "audio/synth/instruments/instrument.h"
-#include "audio/synth/instruments/percussion.h"
-#include "audio/synth/instruments/instrument.h"
-#include "audio/synth/instruments/osc_wave.h"
-//#include "audio/synth/instruments/pad.h"
-//#include "audio/synth/instruments/piano.h"
-//#include "audio/synth/instruments/violin.h"
-#include "audio/synth/instruments/percussion.h"
-#include "audio/synth/instruments/blit.h"
-#include "audio/synth/instruments/karplusstrong.h"
-//#include "audio/synth/instruments/sonant_program.h"
-//#include "audio/synth/instruments/waveguide_synthesis.h"
-#include "audio/synth/channel.h"
-#include "audio/synth/midi_synth.h"
-#include "audio/synth/wave_synth.h"
-#include "audio/formats/spc.h"
-#include "audio/formats/spc_player.h"
-#include "audio/synth/player.h"
+
+};
+
+}
+}
+}

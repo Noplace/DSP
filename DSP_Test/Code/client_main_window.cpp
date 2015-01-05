@@ -90,18 +90,22 @@ void ClientMainWindow::Start() {
   midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
 
   wave_synth_ = new dsp::audio::synth::WaveSynth();
-  spc_  = new dsp::audio::formats::SPCSynth();
+ 
 
   synth_player_ = new dsp::audio::synth::Player();
   synth_player_->set_audio_interface(audio_interface_);
-  synth_player_->set_synth(spc_);
+  synth_player_->set_synth(wave_synth_);
   synth_player_->Initialize();
 
+
+  spc_player.set_audio_interface(audio_interface_);
+  spc_player.Initialize();
   //midi_synth_->LoadMidiFromFile("D:\\Personal\\Projects\\StormTank\\StormTankApp\\Content\\MoonLte3.mid");
   //wave_synth_->LoadWaveFromFile("D:\\Personal\\Samples\\Yamaha-SY-35-Clarinet-C5.wav");
-  spc_->LoadFromFile("D:\\Personal\\Samples\\smw-02.spc");
-
-  synth_player_->Play();
+  spc_player.LoadFromFile("C:\\Users\\Khalid\\Documents\\GitHub\\DSP\\DSP_Test\\Data\\smw-02.spc");
+  //spc_->LoadFromFile("D:\\Personal\\Samples\\smw-02.spc");
+  spc_player.Play();
+  //synth_player_->Play();
 
   SetClientSize(640,480);
   Center();
