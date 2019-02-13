@@ -63,7 +63,7 @@ void DSP::Write(uint8_t addr, uint8_t value) {
 }
 
 short DSP::Tick() {
-
+	return 0;
 }
 
 }
