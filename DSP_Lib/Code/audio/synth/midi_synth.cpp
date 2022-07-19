@@ -411,7 +411,7 @@ void MidiSynth::GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* d
 void MidiSynth::MixChannelsStereo(uint32_t samples_to_generate) {
   
     channels[0]->RenderStereo(samples_to_generate);
-    /*channels[1]->RenderStereo(samples_to_generate);
+    channels[1]->RenderStereo(samples_to_generate);
     channels[2]->RenderStereo(samples_to_generate);
     channels[3]->RenderStereo(samples_to_generate);
     channels[4]->RenderStereo(samples_to_generate);
@@ -419,13 +419,13 @@ void MidiSynth::MixChannelsStereo(uint32_t samples_to_generate) {
     channels[6]->RenderStereo(samples_to_generate);
     channels[7]->RenderStereo(samples_to_generate);
     channels[8]->RenderStereo(samples_to_generate);
-//    channels[9]->RenderStereo(samples_to_generate);
+    channels[9]->RenderStereo(samples_to_generate);
     channels[10]->RenderStereo(samples_to_generate);
     channels[11]->RenderStereo(samples_to_generate);
     channels[12]->RenderStereo(samples_to_generate);
     channels[13]->RenderStereo(samples_to_generate);
     channels[14]->RenderStereo(samples_to_generate);
-    channels[15]->RenderStereo(samples_to_generate);*/
+    channels[15]->RenderStereo(samples_to_generate);
 
     for (uint32_t i=0;i<samples_to_generate<<1;++i) {
       buffers.main[i] = buffers.channels[0][i]+buffers.channels[1][i]+buffers.channels[2][i]+buffers.channels[3][i] +
