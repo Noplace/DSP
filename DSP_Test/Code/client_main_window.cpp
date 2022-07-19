@@ -84,10 +84,10 @@ void ClientMainWindow::Start() {
 
   midi_synth_ = new dsp::audio::synth::MidiSynth();
   midi_synth_->set_mode(dsp::audio::synth::MidiSynth::kModeSequencer);
-  midi_synth_->delay_unit.set_sample_rate(44100);
-  midi_synth_->delay_unit.set_delay_ms(300.0f);
-  midi_synth_->delay_unit.set_feedback(0.4f);
-  midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
+  //midi_synth_->delay_unit.set_sample_rate(44100);
+  //midi_synth_->delay_unit.set_delay_ms(300.0f);
+ // midi_synth_->delay_unit.set_feedback(0.4f);
+ // midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
 
   wave_synth_ = new dsp::audio::synth::WaveSynth();
  
@@ -100,7 +100,8 @@ void ClientMainWindow::Start() {
 
  // spc_player.set_audio_interface(audio_interface_);
   //spc_player.Initialize();
-  midi_synth_->LoadMidiFromFile("C:\\Users\\Alba\\Downloads\\MoonLte3.mid");
+  midi_synth_->LoadMidiFromFile("C:\\Users\\Khalid Alkooheji\\source\\repos\\Noplace\\StormTank\\StormTankApp\\Content\\BotW-Aftermath.mid");
+  //midi_synth_->LoadMidiFromFile("C:\\Users\\Khalid Alkooheji\\source\\repos\\Noplace\\StormTank\\StormTankApp\\Content\\MoonLte3.mid");
   //wave_synth_->LoadWaveFromFile("D:\\Personal\\Samples\\Yamaha-SY-35-Clarinet-C5.wav");
  // spc_player.LoadFromFile("C:\\Users\\Khalid\\Documents\\GitHub\\DSP\\DSP_Test\\Data\\smw-02.spc");
   //spc_->LoadFromFile("D:\\Personal\\Samples\\smw-02.spc");
