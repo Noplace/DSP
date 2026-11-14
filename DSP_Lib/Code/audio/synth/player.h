@@ -29,12 +29,13 @@ class VisualAddon {
   virtual void AddPCMData256(float* samples, uint32_t channels, double time_ms) = 0;
 };
 
-class Player {
+// Legacy push-model player (timer thread + output::Interface, e.g. DirectSound).
+// For low-latency playback use RealtimePlayer instead.
+class Player : public SynthHost {
  public:
   enum State {
     kStateStopped=0,kStatePlaying=1,kStatePaused=2
   };
-  double song_length_ms;
   Player() : state_(kStateStopped), initialized_(false),audio_interface_(nullptr),
              visual_addon_(nullptr), player_event(nullptr),thread_handle(nullptr),thread_id(0) {
   }

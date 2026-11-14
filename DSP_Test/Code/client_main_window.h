@@ -32,12 +32,14 @@ class ClientMainWindow {
   void Windowed();
   void Step();
  private:
+  bool PromptForMidiFile(char* path, size_t path_size);
+  void OpenMidi(const char* path);
+  void UpdateTitle();
 
-  dsp::audio::output::Interface* audio_interface_;
-  dsp::audio::synth::Player*      synth_player_;
-  dsp::audio::synth::MidiSynth*   midi_synth_;
-  dsp::audio::synth::WaveSynth*   wave_synth_;
+  dsp::audio::synth::RealtimePlayer* synth_player_;
+  dsp::audio::synth::MidiSynth*      midi_synth_;
   dsp::audio::formats::SPCPlayer spc_player;
+  char midi_name_[MAX_PATH];
   char title_[MAX_PATH];
   char class_name_[MAX_PATH];
   WNDCLASSEXA window_class_;

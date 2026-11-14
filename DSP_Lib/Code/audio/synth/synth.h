@@ -25,11 +25,18 @@ namespace dsp {
 namespace audio {
 namespace synth {
 
-class Player;
+// What a synth needs from whatever is driving it (Player, RealtimePlayer, ...).
+// Stop() may be called from the audio thread (e.g. at the end of a song).
+class SynthHost {
+ public:
+  virtual ~SynthHost() {}
+  virtual void Stop() = 0;
+  double song_length_ms = 0;
+};
 
 class Synth : public Component {
  public:
-  Player* player_;
+  SynthHost* player_;
   Synth() : Component(),player_(nullptr) {
 
   }

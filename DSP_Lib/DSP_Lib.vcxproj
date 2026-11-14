@@ -79,6 +79,7 @@
     <ClInclude Include="Code\audio\output\directsound.h" />
     <ClInclude Include="Code\audio\output\interface.h" />
     <ClInclude Include="Code\audio\output\output.h" />
+    <ClInclude Include="Code\audio\output\wasapi_output.h" />
     <ClInclude Include="Code\audio\synth\adsr.h" />
     <ClInclude Include="Code\audio\synth\base.h" />
     <ClInclude Include="Code\audio\synth\channel.h" />
@@ -103,6 +104,7 @@
     <ClInclude Include="Code\audio\synth\oscillators\square_oscillator.h" />
     <ClInclude Include="Code\audio\synth\oscillators\triangle_oscillator.h" />
     <ClInclude Include="Code\audio\synth\player.h" />
+    <ClInclude Include="Code\audio\synth\realtime_player.h" />
     <ClInclude Include="Code\audio\synth\synth.h" />
     <ClInclude Include="Code\audio\synth\types.h" />
     <ClInclude Include="Code\audio\synth\util.h" />
@@ -120,6 +122,7 @@
     <ClCompile Include="Code\audio\generalplayer.cpp" />
     <ClCompile Include="Code\audio\midi\midi2.cpp" />
     <ClCompile Include="Code\audio\output\directsound.cpp" />
+    <ClCompile Include="Code\audio\output\wasapi_output.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\blit.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\percussion.cpp" />
     <ClCompile Include="Code\audio\synth\midi_synth.cpp" />
@@ -129,6 +132,7 @@
     <ClCompile Include="Code\audio\synth\oscillators\square_oscillator.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\triangle_oscillator.cpp" />
     <ClCompile Include="Code\audio\synth\player.cpp" />
+    <ClCompile Include="Code\audio\synth\realtime_player.cpp" />
     <ClCompile Include="Code\audio\synth\wave_synth.cpp" />
     <ClCompile Include="Code\io.cpp" />
     <ClCompile Include="Code\lib.cpp" />

@@ -132,11 +132,14 @@ void MidiLoader::readEvent(Stream& stream,Event& event) {
             //throw "Expected length for setTempo event is 3, got " + length;
             DebugBreak();
           }
-					event.data.tempo.microsecondsPerBeat = (
-						(stream.readInt8() << 16)
-						+ (stream.readInt8() << 8)
-						+ stream.readInt8()
-					);
+					{
+						// Read the bytes in separate statements: the order of the three reads in a
+						// single expression is unspecified, and MSVC evaluated them back to front.
+						uint32_t b0 = stream.readInt8();
+						uint32_t b1 = stream.readInt8();
+						uint32_t b2 = stream.readInt8();
+						event.data.tempo.microsecondsPerBeat = (b0 << 16) | (b1 << 8) | b2;
+					}
 					return;
         case 0x54: {
 					event.subtype = kEventSubtypeSmpteOffset;

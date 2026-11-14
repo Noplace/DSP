@@ -55,8 +55,9 @@ static float osc_sin(float value) {
 
 class Filter {
  public:
-  float low,band,q,freq;
-  void Init(float freq) {
+  float low,band,q,freq,sample_rate = 44100.0f;
+  void Init(float freq, float sample_rate) {
+    this->sample_rate = sample_rate;
     this->freq = freq;
     float res = 240.0f;
       q = (float)res / 255.0f;
@@ -66,7 +67,7 @@ class Filter {
   real_t Tick(real_t rsample) {
     //5900.0f;//instrument->fx_freq;
         
-          real_t f = 1.5f * sin(freq * 3.141592f / 44100.0f);
+          real_t f = 1.5f * sin(freq * 3.141592f / sample_rate);
           low += f * band;
           float high = q * (rsample - band) - low;
           band += f * high;
@@ -101,8 +102,8 @@ int Percussion::Load() {
   bassdrum_osc2.set_sample_rate(sample_rate_);
   hihat_osc.set_sample_rate(sample_rate_); 
 
-  snare.Init(11024.0f);
-  bassdrum2.Init(5900.0f);
+  snare.Init(11024.0f, real_t(sample_rate_));
+  bassdrum2.Init(5900.0f, real_t(sample_rate_));
   //default adsr, should be instrument specific
   for (int i=0;i<Polyphony;++i) {
     adsr[i].set_sample_rate(sample_rate_);

@@ -16,6 +16,7 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
+#include <algorithm>
 #include "../../dsp.h"
 
 
@@ -327,9 +328,50 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
     
   } 
 
-  //find song length
-  for (int i=0;i<track_count_;++i) {
-    player_->song_length_ms = max(player_->song_length_ms,tracks[i].event_sequence[tracks[i].event_count-1].abs_time_ms);
+  // Absolute event times and song length. Tempo changes can live on any track (usually
+  // track 0) and apply to all tracks from their tick onwards, so build a time-ordered tempo
+  // map first, then convert each event's absolute tick to milliseconds through it.
+  {
+    struct TempoChange { uint64_t tick; uint32_t us_per_beat; };
+    std::vector<TempoChange> tempo_map;
+    for (int t = 0; t < track_count_; ++t) {
+      uint64_t tick = 0;
+      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
+        auto& ev = tracks[t].event_sequence[e];
+        tick += ev.deltaTime;
+        if (ev.subtype == midi::kEventSubtypeSetTempo && ev.data.tempo.microsecondsPerBeat != 0)
+          tempo_map.push_back({tick, ev.data.tempo.microsecondsPerBeat});
+      }
+    }
+    std::stable_sort(tempo_map.begin(), tempo_map.end(),
+                     [](const TempoChange& a, const TempoChange& b) { return a.tick < b.tick; });
+
+    const double tpb = ticks_per_beat ? double(ticks_per_beat) : 480.0;
+    auto tick_to_ms = [&](uint64_t tick) {
+      double ms = 0;
+      uint64_t last_tick = 0;
+      uint32_t us_per_beat = 500000;  // 120 bpm until the first tempo event
+      for (auto& tc : tempo_map) {
+        if (tc.tick > tick) break;
+        ms += double(tc.tick - last_tick) * us_per_beat / (1000.0 * tpb);
+        last_tick = tc.tick;
+        us_per_beat = tc.us_per_beat;
+      }
+      return ms + double(tick - last_tick) * us_per_beat / (1000.0 * tpb);
+    };
+
+    player_->song_length_ms = 0;
+    for (int t = 0; t < track_count_; ++t) {
+      uint64_t tick = 0;
+      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
+        auto& ev = tracks[t].event_sequence[e];
+        tick += ev.deltaTime;
+        ev.abs_time_ms = tick_to_ms(tick);
+        // Ignore trailing meta events (end-of-track can carry a long delta) for the length.
+        if (ev.type == midi::kEventTypeChannel)
+          player_->song_length_ms = max(player_->song_length_ms, ev.abs_time_ms);
+      }
+    }
   }
 
   Reset();

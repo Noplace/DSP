@@ -23,6 +23,9 @@ namespace demo {
 ClientMainWindow::ClientMainWindow() {
   dispmode = 0;
   class_ = 0;
+  synth_player_ = nullptr;
+  midi_synth_ = nullptr;
+  midi_name_[0] = 0;
   memset(display,0,sizeof(display));
   display[0].style = WS_VISIBLE | WS_BORDER|WS_CAPTION|WS_MINIMIZEBOX|WS_SYSMENU|WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
   display[1].style = WS_POPUP | WS_VISIBLE | WS_MAXIMIZE;
@@ -76,66 +79,86 @@ void ClientMainWindow::Create() {
 }
 
 void ClientMainWindow::Start() {
-
-  audio_interface_ = new dsp::audio::output::DirectSound();
-  audio_interface_->set_window_handle(handle_);
-  audio_interface_->set_buffer_size((44100/1)*4*10);
-  audio_interface_->Initialize(44100,2,16);
-
   midi_synth_ = new dsp::audio::synth::MidiSynth();
   midi_synth_->set_mode(dsp::audio::synth::MidiSynth::kModeSequencer);
-  //midi_synth_->delay_unit.set_sample_rate(44100);
   //midi_synth_->delay_unit.set_delay_ms(300.0f);
- // midi_synth_->delay_unit.set_feedback(0.4f);
- // midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
+  //midi_synth_->delay_unit.set_feedback(0.4f);
+  //midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
 
-  wave_synth_ = new dsp::audio::synth::WaveSynth();
- 
-
-  synth_player_ = new dsp::audio::synth::Player();
-  synth_player_->set_audio_interface(audio_interface_);
-  synth_player_->set_synth(midi_synth_);
-  synth_player_->Initialize();
-
-
- // spc_player.set_audio_interface(audio_interface_);
-  //spc_player.Initialize();
-  //spc_player.LoadFromFile("Data\\smw-02.spc");
-  //spc_player.Play();
-
-  // MIDI file: first command-line argument, otherwise ask with an Open dialog.
-  char midi_path[MAX_PATH] = {};
-  if (__argc > 1) {
-    strncpy_s(midi_path, __argv[1], _TRUNCATE);
-  } else {
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = handle_;
-    ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = midi_path;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrTitle = "Open MIDI file";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameA(&ofn))
-      midi_path[0] = 0;
+  // Low-latency WASAPI output; the synth runs at the device's sample rate.
+  synth_player_ = new dsp::audio::synth::RealtimePlayer();
+  if (!synth_player_->Initialize(midi_synth_)) {
+    MessageBoxA(handle_, synth_player_->last_error(), "Could not open audio device", MB_ICONERROR);
   }
 
-  if (midi_path[0] != 0) {
-    midi_synth_->LoadMidiFromFile(midi_path);
-    const char* name = strrchr(midi_path, '\\');
-    sprintf_s(title_, "DSP MIDI Synth - %s", name ? name + 1 : midi_path);
-    SetWindowText(handle_, title_);
-    synth_player_->Play();
-  }
+  //spc_player (legacy DirectSound path) is not wired up.
 
   SetClientSize(640,480);
   Center();
   Show();
-  //gl.Initialize(handle_,640,480,1,0,true);
+  SetTimer(handle_, 1, 200, nullptr);  // refresh position in the title bar
+
+  // MIDI file: first command-line argument, otherwise ask with an Open dialog.
+  char midi_path[MAX_PATH] = {};
+  if (__argc > 1)
+    strncpy_s(midi_path, __argv[1], _TRUNCATE);
+  else if (!PromptForMidiFile(midi_path, sizeof(midi_path)))
+    midi_path[0] = 0;
+  if (midi_path[0] != 0)
+    OpenMidi(midi_path);
+  UpdateTitle();
+}
+
+bool ClientMainWindow::PromptForMidiFile(char* path, size_t path_size) {
+  OPENFILENAMEA ofn = {};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = handle_;
+  ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = (DWORD)path_size;
+  ofn.lpstrTitle = "Open MIDI file";
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  return GetOpenFileNameA(&ofn) != FALSE;
+}
+
+void ClientMainWindow::OpenMidi(const char* path) {
+  if (synth_player_ == nullptr)
+    return;
+  // Loading replaces the synth's track data, so keep the audio thread out while it happens.
+  synth_player_->WithSynthLocked([&] { midi_synth_->LoadMidiFromFile(path); });
+  const char* name = strrchr(path, '\\');
+  strncpy_s(midi_name_, name ? name + 1 : path, _TRUNCATE);
+  synth_player_->Play();
+}
+
+void ClientMainWindow::UpdateTitle() {
+  char text[MAX_PATH * 2];
+  if (synth_player_ == nullptr || !synth_player_->output().running()) {
+    bool lost = synth_player_ != nullptr && synth_player_->output().device_lost();
+    sprintf_s(text, "%s - %s", title_, lost ? "audio device lost" : "no audio device");
+  } else {
+    static const char* state_names[] = {"Stopped", "Playing", "Paused"};
+    auto& out = synth_player_->output();
+    int pos = (int)synth_player_->GetPlaybackSeconds();
+    int len = (int)(synth_player_->song_length_ms / 1000.0);
+    sprintf_s(text, "%s - %s [%s %d:%02d / %d:%02d] - %u Hz, %.2f ms period - Space: play/pause, S: stop, O: open",
+              title_, midi_name_[0] ? midi_name_ : "(no file)", state_names[synth_player_->state()],
+              pos / 60, pos % 60, len / 60, len % 60, out.sample_rate(), out.period_ms());
+  }
+  SetWindowTextA(handle_, text);
 }
 
 void ClientMainWindow::Destroy() {
   //gl.Deinitialize(handle_);
+  if (synth_player_ != nullptr) {
+    KillTimer(handle_, 1);
+    delete synth_player_;  // stops the audio thread before the synth goes away
+    synth_player_ = nullptr;
+  }
+  if (midi_synth_ != nullptr) {
+    delete midi_synth_;
+    midi_synth_ = nullptr;
+  }
   if (class_!=0) {
     UnregisterClass(class_name_,0);
     class_ = 0;
@@ -237,12 +260,21 @@ LRESULT CALLBACK ClientMainWindow::WindowProc(HWND hwnd, UINT uMsg, WPARAM wPara
   if (win != nullptr) {
     switch( uMsg ) {
       case WM_KEYDOWN:
-        if (wParam == VK_F11) {
-          //if (win->dispmode == 0)
-            //win->Fullscreen();
-          //else
-            //win->Windowed();
+        if (win->synth_player_ != nullptr) {
+          if (wParam == VK_SPACE) {
+            win->synth_player_->TogglePause();
+          } else if (wParam == 'S') {
+            win->synth_player_->Stop();
+          } else if (wParam == 'O') {
+            char path[MAX_PATH] = {};
+            if (win->PromptForMidiFile(path, sizeof(path)))
+              win->OpenMidi(path);
+          }
+          win->UpdateTitle();
         }
+        return 0;
+      case WM_TIMER:
+        win->UpdateTitle();
         return 0;
       case WM_SYSCOMMAND:
         if (wParam == SC_SCREENSAVE || wParam == SC_MONITORPOWER)
