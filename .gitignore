@@ -213,3 +213,14 @@ pip-log.txt
 
 #Mr Developer
 .mr.developer.cfg
+
+#################
+## DSP project
+#################
+
+# Visual Studio per-user cache
+.vs/
+
+# Package manager output (no longer used)
+packages/
+vcpkg_installed/

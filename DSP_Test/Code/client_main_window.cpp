@@ -44,7 +44,7 @@ ClientMainWindow::ClientMainWindow() {
 
  
 
-  sprintf_s(title_,"Game Client");
+  sprintf_s(title_,"DSP MIDI Synth");
   sprintf_s(class_name_,"%s_class",title_);
   memset(&window_class_,0,sizeof(window_class_));
   window_class_.cbSize = sizeof(window_class_);
@@ -100,13 +100,33 @@ void ClientMainWindow::Start() {
 
  // spc_player.set_audio_interface(audio_interface_);
   //spc_player.Initialize();
-  midi_synth_->LoadMidiFromFile("C:\\Users\\Khalid Alkooheji\\source\\repos\\Noplace\\StormTank\\StormTankApp\\Content\\BotW-Aftermath.mid");
-  //midi_synth_->LoadMidiFromFile("C:\\Users\\Khalid Alkooheji\\source\\repos\\Noplace\\StormTank\\StormTankApp\\Content\\MoonLte3.mid");
-  //wave_synth_->LoadWaveFromFile("D:\\Personal\\Samples\\Yamaha-SY-35-Clarinet-C5.wav");
- // spc_player.LoadFromFile("C:\\Users\\Khalid\\Documents\\GitHub\\DSP\\DSP_Test\\Data\\smw-02.spc");
-  //spc_->LoadFromFile("D:\\Personal\\Samples\\smw-02.spc");
+  //spc_player.LoadFromFile("Data\\smw-02.spc");
   //spc_player.Play();
-  synth_player_->Play();
+
+  // MIDI file: first command-line argument, otherwise ask with an Open dialog.
+  char midi_path[MAX_PATH] = {};
+  if (__argc > 1) {
+    strncpy_s(midi_path, __argv[1], _TRUNCATE);
+  } else {
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = handle_;
+    ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = midi_path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = "Open MIDI file";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameA(&ofn))
+      midi_path[0] = 0;
+  }
+
+  if (midi_path[0] != 0) {
+    midi_synth_->LoadMidiFromFile(midi_path);
+    const char* name = strrchr(midi_path, '\\');
+    sprintf_s(title_, "DSP MIDI Synth - %s", name ? name + 1 : midi_path);
+    SetWindowText(handle_, title_);
+    synth_player_->Play();
+  }
 
   SetClientSize(640,480);
   Center();

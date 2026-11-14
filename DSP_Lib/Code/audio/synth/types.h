@@ -31,7 +31,7 @@ struct NoteData {
     bool on;
 };
 
-const int note_count = 127;
+const int note_count = 128; // MIDI notes 0..127
 
 enum Notes {
   kNoteA0=21,kNoteBb0,kNoteB0,

@@ -45,7 +45,7 @@ class MidiSynth : public Synth {
     kModeTest
   };
   MidiSynth() : Synth(),initialized_(false),mode_(kModeSequencer),percussion_instr(nullptr),
-                last_event(nullptr),tracks(nullptr),ticks_per_beat(0),samples_to_next_event(0),bpm(0) {
+                last_event(nullptr),tracks(nullptr),ticks_per_beat(0),samples_to_next_event(0),bpm(0),track_count_(0) {
     memset(&instr,0,sizeof(instr));
     memset(&channels,0,sizeof(channels));
     memset(&aux_effects,0,sizeof(aux_effects));
@@ -106,6 +106,7 @@ class MidiSynth : public Synth {
     samples_to_next_event = 0;
   }
   void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
+  void GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void MixChannelsStereo(uint32_t samples_to_generate);
   midi::Event* GetNextEvent();
   void HandleEvent(midi::Event* event);

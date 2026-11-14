@@ -193,6 +193,9 @@ DWORD Player::InstancePlayThread() {
       span_accumulator += time_span;
       thread_time_span += time_span;
       prev_cycles = current_cycles;
+      // Nothing to render until the next update; don't spin a whole core while waiting.
+      if (span_accumulator < update_time)
+        Sleep(1);
     } else {
       //wait for pause/stop events with timer
       WaitForSingleObject(player_event,2000);

@@ -389,6 +389,18 @@ void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
 
 
 void MidiSynth::GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset) {
+  // The internal mix buffers only hold buffers.main_size/2 stereo frames, but the player
+  // can ask for more than that between two events, so render in buffer-sized chunks.
+  const uint32_t max_frames = uint32_t(buffers.main_size / 2);
+  while (samples_to_generate > max_frames) {
+    GenerateChunkStereo(max_frames, data_out, data_offset);
+    samples_to_generate -= max_frames;
+  }
+  if (samples_to_generate > 0)
+    GenerateChunkStereo(samples_to_generate, data_out, data_offset);
+}
+
+void MidiSynth::GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset) {
   //mix and send to aux
   MixChannelsStereo(samples_to_generate);
   //effects processing

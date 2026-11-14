@@ -15,9 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Code\gl.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Code\winmain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -35,12 +32,8 @@
     <ClInclude Include="Code\timer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\gl.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Data\smw-02.spc" />
-    <None Include="packages.config" />
   </ItemGroup>
 </Project>

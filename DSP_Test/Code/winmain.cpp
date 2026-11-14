@@ -37,17 +37,13 @@ class Win32App  {
     
     window.Start();
 
-    MSG msg;
-    
-
-    do {
-      if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-      } else {
-        window.Step();
-      }
-    } while(msg.message!=WM_QUIT);
+    // Nothing renders on the UI thread (audio has its own thread), so block on
+    // messages instead of spinning a PeekMessage loop.
+    MSG msg = {};
+    while (GetMessage(&msg, NULL, 0, 0) > 0) {
+      TranslateMessage(&msg);
+      DispatchMessage(&msg);
+    }
   
     window.Destroy();
     //Return the exit code to the system. 

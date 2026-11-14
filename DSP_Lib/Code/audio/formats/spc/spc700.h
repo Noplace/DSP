@@ -203,7 +203,7 @@ class SPC700 {
   
 //need to change below to make read write based on the proper functions
 
-  DataPair SPC700::mem(uint16_t addr) {
+  DataPair mem(uint16_t addr) {
     return {addr,ram_[addr]};
   }
 

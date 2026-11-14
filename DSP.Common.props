@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Shared build settings for all DSP projects.
+  Imported by each .vcxproj right after Microsoft.Cpp.props.
+-->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <!-- Keep all build output inside the repo (ignored by git). -->
+    <DspRoot>$(MSBuildThisFileDirectory)</DspRoot>
+    <OutDir>$(DspRoot)build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(DspRoot)build\$(Platform)\$(Configuration)\obj\$(ProjectName)\</IntDir>
+    <!-- No package manager dependencies; ignore any user-wide vcpkg integration. -->
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <WarningLevel>Level3</WarningLevel>
+      <!-- 4244/4305: float<->double narrowing all over the DSP code; 4996: CRT "unsafe" functions. -->
+      <DisableSpecificWarnings>4244;4305;4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
