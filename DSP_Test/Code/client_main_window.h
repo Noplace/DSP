@@ -51,6 +51,7 @@ class ClientMainWindow {
   int program_;              // GM program number 0..127
   uint8_t held_note_[256];   // per virtual key: note + 1 while held, 0 otherwise
   float level_db_;
+  float limiter_db_;
   HFONT font_;
   dsp::audio::formats::SPCPlayer spc_player;
   char midi_name_[MAX_PATH];

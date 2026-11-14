@@ -108,6 +108,7 @@ class MidiSynth : public Synth {
     last_event = GetNextEvent();
     samples_to_next_event = 0;
   }
+  void BuildInstrumentBank();
   void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void MixChannelsStereo(uint32_t samples_to_generate);
@@ -125,12 +126,14 @@ class MidiSynth : public Synth {
   real_t chromatic_scale_freq[note_count];
   struct {
     real_t* channels[16];
+    real_t* mono[16];
     real_t* main;
     real_t* aux;
     size_t main_size;
     size_t aux_size;
   } buffers;  
-  instruments::InstrumentProcessor* instr[kInstrumentCount];
+  instruments::InstrumentProcessor* instr[kInstrumentCount];  // GM program -> instrument (not owned)
+  std::vector<std::unique_ptr<instruments::InstrumentProcessor>> instrument_store_;
   instruments::Percussion* percussion_instr;
   Channel* channels[kChannelCount];
   midi::Event* last_event;

@@ -26,98 +26,151 @@ namespace synth {
 
 class MidiSynth;
 
+// One MIDI channel: current program, controllers and the voices it is sounding.
+//
+// Voices are borrowed from the instrument that started them, so a note keeps sounding with
+// its own instrument after a program change, and channels sharing an instrument never share a
+// voice. Only sounding voices are rendered.
 class Channel : public Component {
  public:
-  Channel(int index) : Component(),index(index),instrument_data_(nullptr),instrument_(nullptr),buffer_(nullptr),amplification_(1.0),silence_(false),pitch_bend_range_(2.0f),param_fine(0),param_coarse(0),des_fine(0),des_coarse(0),aux_send(0) {
+  static const int kMaxVoices = 64;
+
+  Channel(int index) : Component(),index(index),instrument_(nullptr),buffer_(nullptr),mono_(nullptr),
+                       mono_capacity_(0),voice_count_(0),amplification_(1.0f),expression_(1.0f),
+                       pitch_bend_range_(2.0f),bend_factor_(1.0f),aux_send(0),param_fine(127),
+                       param_coarse(127),des_fine(0),des_coarse(2),silence_(false),sustain_(false) {
     set_panning(0.5);
-    current_note=0;
     memset(&effects,0,sizeof(effects));
   }
   ~Channel() {
-    //SafeDeleteArray(&buffer_);
-    SafeDelete(&instrument_data_);
   }
+
   void RenderStereo(uint32_t samples_to_generate) {
-    instrument_->set_instrument_data(instrument_data_);
-    auto bufptr = buffer_;
-    if (silence_ == false) {
-      for (uint32_t i=0;i<samples_to_generate;++i) {
-        real_t sample = 0;
-        for (int n=0;n<Polyphony;++n) {
-          sample += instrument_->Tick(n);
-        }
-        *bufptr++ = (amplification_*pan_l*sample);
-        *bufptr++ = (amplification_*pan_r*sample);
-      }
-      //effects processing
-      for (int i=0;i<5;++i) {
-        if (effects[i] != nullptr)
-          effects[i]->ProcessStereo(buffer_,buffer_,samples_to_generate);
-      }
+    // Drop voices that finished their release or were stolen by another channel.
+    for (int i = 0; i < voice_count_;) {
+      auto& v = voices_[i];
+      bool stolen = v.instrument->voice_generation(v.index) != v.generation;
+      bool finished = !v.held && !v.sustained && !v.instrument->IsVoiceActive(v.index);
+      if (stolen || finished)
+        voices_[i] = voices_[--voice_count_];
+      else
+        ++i;
     }
-  }
-  void AddNote(int note,real_t freq,real_t velocity) {
-    instrument_->set_instrument_data(instrument_data_);
-    auto ptr = &instrument_data_->note_data_array[current_note];
-    ptr->note = note;
-    ptr->velocity = velocity;
-    ptr->on = true;
-    instrument_->SetFrequency(freq,current_note);
-    instrument_->NoteOn(current_note);
-    current_note = (current_note + 1) % Polyphony;
-  }
-  void AllNotesOff() {
-    if (instrument_ == nullptr || instrument_data_ == nullptr)
+
+    if (voice_count_ == 0 || mono_ == nullptr) {
+      memset(buffer_, 0, sizeof(real_t) * samples_to_generate * 2);
       return;
-    instrument_->set_instrument_data(instrument_data_);
-    for (int i=0;i<Polyphony;++i) {
-      auto* ptr = &instrument_data_->note_data_array[i];
-      if (ptr->on) {
-        ptr->on = false;
-        instrument_->NoteOff(i);
-      }
+    }
+
+    memset(mono_, 0, sizeof(real_t) * samples_to_generate);
+    for (int i = 0; i < voice_count_; ++i) {
+      auto& v = voices_[i];
+      auto inst = v.instrument;
+      const int index = v.index;
+      const real_t gain = v.gain;
+      for (uint32_t s = 0; s < samples_to_generate; ++s)
+        mono_[s] += inst->Tick(index) * gain;
+    }
+
+    const real_t level = amplification_ * expression_;
+    const real_t left = level * pan_l, right = level * pan_r;
+    auto bufptr = buffer_;
+    for (uint32_t s = 0; s < samples_to_generate; ++s) {
+      *bufptr++ = left * mono_[s];
+      *bufptr++ = right * mono_[s];
+    }
+    //effects processing
+    for (int i=0;i<kEffectCount;++i) {
+      if (effects[i] != nullptr)
+        effects[i]->ProcessStereo(buffer_,buffer_,samples_to_generate);
     }
   }
+
+  void AddNote(int note,real_t freq,real_t velocity) {
+    if (instrument_ == nullptr)
+      return;
+    // Re-striking a key that's still sounding: release the old voice first.
+    for (int i = 0; i < voice_count_; ++i) {
+      auto& v = voices_[i];
+      if (v.note == note && (v.held || v.sustained)) {
+        v.held = v.sustained = false;
+        v.instrument->ReleaseVoice(v.index);
+      }
+    }
+    if (voice_count_ == kMaxVoices) {
+      // Channel full: let go of the oldest entry.
+      voices_[0].instrument->ReleaseVoice(voices_[0].index);
+      voices_[0] = voices_[--voice_count_];
+    }
+    Voice v;
+    v.instrument = instrument_;
+    v.index = instrument_->AllocateVoice(v.generation);
+    v.note = note;
+    v.base_freq = freq;
+    v.gain = velocity * velocity;  // GM-style velocity curve (40*log10(v) dB)
+    v.held = true;
+    v.sustained = false;
+    instrument_->StartVoice(v.index, note, freq * bend_factor_, velocity);
+    voices_[voice_count_++] = v;
+  }
+
   void RemoveNote(int note,real_t velocity) {
-    instrument_->set_instrument_data(instrument_data_);
-    for (int i=0;i<Polyphony;++i) {
-      auto* ptr = &instrument_data_->note_data_array[i];
-      if (ptr->note == note && ptr->on == true) {
-        ptr->on = false;
-        ptr->note = note;
-        ptr->velocity = velocity;
-        instrument_->NoteOff(i);
-        current_note = i;
+    for (int i = 0; i < voice_count_; ++i) {
+      auto& v = voices_[i];
+      if (v.note != note || !v.held)
+        continue;
+      v.held = false;
+      if (sustain_)
+        v.sustained = true;  // keep sounding until the pedal comes up
+      else
+        v.instrument->ReleaseVoice(v.index);
+    }
+  }
+
+  void AllNotesOff() {
+    for (int i = 0; i < voice_count_; ++i) {
+      auto& v = voices_[i];
+      if (v.held || v.sustained) {
+        v.held = v.sustained = false;
+        v.instrument->ReleaseVoice(v.index);
       }
     }
   }
-  void SetPitchBend(real_t amount) {
-    instrument_->set_instrument_data(instrument_data_);
-    real_t e = exp(amount * _LN_2_DIV_12);
-    for (int i=0;i<Polyphony;++i) {
-      auto freq = instrument_data_->note_data_array[i].freq * e;
-      instrument_->SetFrequency(freq,i);
+
+  void set_sustain(bool on) {
+    sustain_ = on;
+    if (!on) {
+      for (int i = 0; i < voice_count_; ++i) {
+        auto& v = voices_[i];
+        if (v.sustained) {
+          v.sustained = false;
+          v.instrument->ReleaseVoice(v.index);
+        }
+      }
     }
   }
+  void set_expression(real_t expression) { expression_ = expression; }
+  void ResetControllers() {
+    set_sustain(false);
+    expression_ = 1.0f;
+    SetPitchBend(0);
+  }
+
+  // amount in semitones
+  void SetPitchBend(real_t amount) {
+    bend_factor_ = exp(amount * _LN_2_DIV_12);
+    for (int i = 0; i < voice_count_; ++i) {
+      auto& v = voices_[i];
+      if (v.instrument->voice_generation(v.index) == v.generation)
+        v.instrument->BendFrequency(v.base_freq * bend_factor_, v.index);
+    }
+  }
+
   instruments::InstrumentProcessor* instrument() { return instrument_; }
+  // New notes use this instrument; sounding notes keep theirs.
   void set_instrument(instruments::InstrumentProcessor* instrument) {
     instrument_ = instrument;
-
-    if (instrument_data_ == nullptr) {
-      instrument_data_ = instrument_->NewInstrumentData();
-    } else {
-      auto newidata = instrument_->NewInstrumentData();
-      memcpy(newidata->note_data_array,instrument_data_->note_data_array,sizeof(newidata->note_data_array));
-      SafeDelete(&instrument_data_);
-      instrument_data_ = newidata;
-      newidata = nullptr;
-    }
   }
-  /*void set_buffer_length(real_t buffer_length_ms) {
-    buffer_size_ = uint32_t(sample_rate_*2*buffer_length_ms*0.001);
-    SafeDeleteArray(&buffer_);
-    buffer_ = new real_t[buffer_size_];
-  }*/
   void set_amplification(real_t amplification) {
     amplification_ = amplification;
   }
@@ -127,33 +180,45 @@ class Channel : public Component {
     pan_r = sqrt(panning_);
   }
   bool silence() { return silence_;  }
-  void set_silence(bool silence) {    
-    silence_ = silence;  
-    if (silence_ == true) {
-     // memset(buffer_,0,sizeof(real_t)*buffer_size_);
-    }
-  }
+  void set_silence(bool silence) { silence_ = silence; }
   real_t pitch_bend_range() {
     return pitch_bend_range_;
   }
   void set_pitch_bend_range(real_t pitch_bend_range) {
     pitch_bend_range_ = pitch_bend_range;
   }
+  int active_voices() const { return voice_count_; }
   real_t* buffer() {
     return buffer_;
   }
   void set_buffer(real_t* buffer) { buffer_ = buffer; }
+  // Scratch buffer for summing voices, at least as many frames as one render block.
+  void set_mono_buffer(real_t* mono, uint32_t capacity) { mono_ = mono; mono_capacity_ = capacity; }
+
  private:
   friend MidiSynth;
+  struct Voice {
+    instruments::InstrumentProcessor* instrument;
+    int index;
+    uint32_t generation;
+    int note;
+    real_t base_freq;  // unbent frequency
+    real_t gain;       // from velocity
+    bool held;         // key is down
+    bool sustained;    // key released while the sustain pedal was down
+  };
   effects::Effect* effects[kEffectCount];
-  instruments::InstrumentData* instrument_data_;
   instruments::InstrumentProcessor* instrument_;
   real_t* buffer_;
-  real_t amplification_,panning_,pan_l,pan_r,pitch_bend_range_,aux_send;
-  //uint32_t buffer_size_;
-  int index,current_note;
-  uint8_t param_fine,param_coarse,des_fine,des_coarse;
+  real_t* mono_;
+  uint32_t mono_capacity_;
+  Voice voices_[kMaxVoices];
+  int voice_count_;
+  real_t amplification_,expression_,panning_,pan_l,pan_r,pitch_bend_range_,bend_factor_,aux_send;
+  int index;
+  uint8_t param_fine,param_coarse,des_fine,des_coarse;  // RPN select + data entry
   bool silence_;
+  bool sustain_;
 };
 
 }

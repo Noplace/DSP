@@ -23,8 +23,10 @@ namespace audio {
 namespace synth {
 
 RealtimePlayer::RealtimePlayer()
-    : synth_(nullptr), midi_input_(nullptr), peak_level_(0.0f), desired_state_(kStateStopped),
-      state_(kStateStopped), rewind_requested_(false), ready_(false), frames_played_(0) {
+    : synth_(nullptr), midi_input_(nullptr), peak_level_(0.0f), limiter_threshold_(0.891f),  // -1 dBFS
+      limiter_release_coef_(0.9999f), limiter_envelope_(0.0f), limiter_min_gain_(1.0f),
+      desired_state_(kStateStopped), state_(kStateStopped), rewind_requested_(false), ready_(false),
+      frames_played_(0) {
 }
 
 RealtimePlayer::~RealtimePlayer() {
@@ -46,6 +48,8 @@ bool RealtimePlayer::Initialize(Synth* synth) {
     synth_->set_sample_rate(output_.sample_rate());
     synth_->Initialize();
   });
+  // Limiter recovers with a ~150 ms time constant.
+  limiter_release_coef_ = expf(-1.0f / (0.150f * output_.sample_rate()));
   ready_ = true;
   return true;
 }
@@ -129,6 +133,8 @@ void RealtimePlayer::Render(float* stereo_out, uint32_t frames) {
 
   synth_lock_.unlock();
 
+  Limit(stereo_out, frames);
+
   float peak = 0.0f;
   for (uint32_t i = 0; i < frames * 2; ++i) {
     float v = fabsf(stereo_out[i]);
@@ -136,6 +142,30 @@ void RealtimePlayer::Render(float* stereo_out, uint32_t frames) {
   }
   float current = peak_level_.load(std::memory_order_relaxed);
   while (peak > current && !peak_level_.compare_exchange_weak(current, peak, std::memory_order_relaxed)) {
+  }
+}
+
+// Stereo-linked peak limiter with instant attack: the envelope jumps to any new peak, so
+// |output| never exceeds the threshold, then decays exponentially and the gain recovers
+// smoothly. Replaces the old hard clip.
+void RealtimePlayer::Limit(float* stereo, uint32_t frames) {
+  float env = limiter_envelope_;
+  float min_gain = 1.0f;
+  for (uint32_t i = 0; i < frames; ++i) {
+    float& l = stereo[i * 2];
+    float& r = stereo[i * 2 + 1];
+    float peak = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
+    env = peak > env ? peak : env * limiter_release_coef_;
+    if (env > limiter_threshold_) {
+      float gain = limiter_threshold_ / env;
+      l *= gain;
+      r *= gain;
+      if (gain < min_gain) min_gain = gain;
+    }
+  }
+  limiter_envelope_ = env;
+  float current = limiter_min_gain_.load(std::memory_order_relaxed);
+  while (min_gain < current && !limiter_min_gain_.compare_exchange_weak(current, min_gain, std::memory_order_relaxed)) {
   }
 }
 

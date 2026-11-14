@@ -35,12 +35,22 @@ class OscWaveData : public InstrumentData {
   }
 };
 
+// Amplitude envelope settings for an instrument.
+struct Envelope {
+  real_t attack_amp, sustain_amp;            // peak level, held level (0 = percussive)
+  real_t attack_ms, decay_ms, release_ms;
+};
+
 class OscWave : public InstrumentProcessor {
  public:
   enum WaveType {
    Sine,Square,Triangle,Sawtooth,Exponent
   };
-  OscWave(WaveType type) : InstrumentProcessor(),osc(nullptr),type_(type) {
+  // The original default envelope.
+  static Envelope DefaultEnvelope() { return Envelope{0.5f, 0.3f, 50.0f, 8.0f, 20.5f}; }
+
+  OscWave(WaveType type, const Envelope& envelope = DefaultEnvelope())
+      : InstrumentProcessor(),osc(nullptr),type_(type),envelope_(envelope) {
 
   }
   virtual ~OscWave() {
@@ -60,15 +70,13 @@ class OscWave : public InstrumentProcessor {
         break;
     }
     osc->set_sample_rate(sample_rate_);
-    //default adsr, should be instrument specific
-  //default adsr, should be instrument specific
     for (int i=0;i<Polyphony;++i) {
       adsr[i].set_sample_rate(sample_rate_);
-      adsr[i].set_attack_amp(0.5f);
-      adsr[i].set_sustain_amp(0.3f);
-      adsr[i].set_attack_time_ms(50.0f);
-      adsr[i].set_decay_time_ms(8.0f);
-      adsr[i].set_release_time_ms(20.5f);
+      adsr[i].set_attack_amp(envelope_.attack_amp);
+      adsr[i].set_sustain_amp(envelope_.sustain_amp);
+      adsr[i].set_attack_time_ms(envelope_.attack_ms);
+      adsr[i].set_decay_time_ms(envelope_.decay_ms);
+      adsr[i].set_release_time_ms(envelope_.release_ms);
     }
     loaded_ = true;
     return S_OK;
@@ -109,6 +117,7 @@ class OscWave : public InstrumentProcessor {
   OscWaveData* cdata;
   oscillators::Oscillator* osc;
   WaveType type_;
+  Envelope envelope_;
 };
 
 }

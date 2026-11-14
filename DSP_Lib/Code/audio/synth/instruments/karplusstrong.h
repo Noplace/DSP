@@ -152,9 +152,14 @@ class KarplusStrongData : public InstrumentData {
 
 class KarplusStrong : public InstrumentProcessor {
  public:
-  KarplusStrong() : InstrumentProcessor() {
+  // brightness_hz: loop low-pass cutoff (higher = brighter, longer ringing).
+  // release_ms: how fast the note dies after key-up (dampers).
+  KarplusStrong(real_t brightness_hz = 12050.0f, real_t release_ms = 20.5f)
+      : InstrumentProcessor(), brightness_hz_(brightness_hz), release_ms_(release_ms) {
     randseed = 1;
   }
+  // Re-tuning restarts the string, so ignore pitch bend on sounding notes.
+  void BendFrequency(real_t, int) override {}
   virtual ~KarplusStrong() {
     Unload();
   }
@@ -183,7 +188,7 @@ class KarplusStrong : public InstrumentProcessor {
       HL[i].Update(22100.0f);
       
       lowpass[i].set_sample_rate(sample_rate_);
-      lowpass[i].set_cutoff_freq(12050.0f);
+      lowpass[i].set_cutoff_freq(brightness_hz_);
       lowpass[i].Update();
       //delay[i].set_sample_rate(sample_rate_);
       //delay[i].set_delay_ms(40.0f);
@@ -194,7 +199,7 @@ class KarplusStrong : public InstrumentProcessor {
       adsr[i].set_sustain_amp(0.6f);
       adsr[i].set_attack_time_ms(10.0f);
       adsr[i].set_decay_time_ms(4.0f);
-      adsr[i].set_release_time_ms(20.5f);
+      adsr[i].set_release_time_ms(release_ms_);
     }
 
     /*for_each_note([&](int index,float freq){
@@ -289,6 +294,7 @@ class KarplusStrong : public InstrumentProcessor {
   //effects::Delay delay[Polyphony];
   DelayLine delay[Polyphony];
   uint32_t randseed;
+  real_t brightness_hz_, release_ms_;
   
 
   inline void FillNoise(int index) {

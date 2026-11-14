@@ -76,6 +76,102 @@ const MidiSynth::MidiEventHandler MidiSynth::midi_channel_event_handlers[23] = {
 
 };
 
+// General MIDI program -> instrument. Programs that should sound alike share one instrument
+// (and its voice pool). Plucked and struck strings use Karplus-Strong; everything else uses
+// oscillator waves with an envelope that suits the family.
+void MidiSynth::BuildInstrumentBank() {
+  using instruments::Envelope;
+  using instruments::OscWave;
+  using instruments::KarplusStrong;
+
+  auto add = [&](instruments::InstrumentProcessor* inst) {
+    inst->set_sample_rate(sample_rate_);
+    inst->Prepare();  // load up front: live program changes happen on the audio thread
+    instrument_store_.emplace_back(inst);
+    return inst;
+  };
+  auto assign = [&](int first, int last, instruments::InstrumentProcessor* inst) {
+    for (int p = first; p <= last; ++p)
+      instr[p] = inst;
+  };
+
+  //                         attack sustain  attack  decay  release (levels, ms)
+  const Envelope pluck   = {0.9f,  0.0f,     2.0f,  700.0f, 150.0f};
+  const Envelope mallet  = {0.9f,  0.0f,     1.0f,  450.0f, 250.0f};
+  const Envelope organ   = {0.45f, 0.45f,    6.0f,    1.0f,  60.0f};
+  const Envelope strings = {0.35f, 0.32f,  140.0f,   60.0f, 300.0f};
+  const Envelope brass   = {0.45f, 0.35f,   45.0f,   90.0f, 120.0f};
+  const Envelope reed    = {0.35f, 0.30f,   30.0f,   60.0f, 100.0f};
+  const Envelope flute   = {0.5f,  0.42f,   70.0f,   60.0f, 140.0f};
+  const Envelope lead    = {0.35f, 0.30f,    5.0f,   50.0f,  80.0f};
+  const Envelope pad     = {0.3f,  0.28f,  450.0f,  100.0f, 700.0f};
+  const Envelope fx      = {0.4f,  0.30f,  200.0f,  200.0f, 500.0f};
+
+  auto harpsichord = add(new KarplusStrong(12000.0f, 40.0f));
+  auto piano       = add(new KarplusStrong(7000.0f, 250.0f));
+  auto guitar      = add(new KarplusStrong(5000.0f, 150.0f));
+  auto bass        = add(new KarplusStrong(2500.0f, 100.0f));
+  auto harp        = add(new KarplusStrong(9000.0f, 600.0f));
+  auto sine_mallet = add(new OscWave(OscWave::Sine, mallet));
+  auto tri_organ   = add(new OscWave(OscWave::Triangle, organ));
+  auto sq_organ    = add(new OscWave(OscWave::Square, Envelope{0.25f, 0.25f, 6.0f, 1.0f, 60.0f}));
+  auto saw_strings = add(new OscWave(OscWave::Sawtooth, strings));
+  auto saw_brass   = add(new OscWave(OscWave::Sawtooth, brass));
+  auto sq_reed     = add(new OscWave(OscWave::Square, reed));
+  auto tri_flute   = add(new OscWave(OscWave::Triangle, flute));
+  auto sq_lead     = add(new OscWave(OscWave::Square, lead));
+  auto saw_lead    = add(new OscWave(OscWave::Sawtooth, lead));
+  auto saw_pluck   = add(new OscWave(OscWave::Sawtooth, Envelope{0.5f, 0.0f, 2.0f, 500.0f, 120.0f}));
+  auto tri_pad     = add(new OscWave(OscWave::Triangle, pad));
+  auto saw_pad     = add(new OscWave(OscWave::Sawtooth, Envelope{0.2f, 0.18f, 450.0f, 100.0f, 700.0f}));
+  auto tri_fx      = add(new OscWave(OscWave::Triangle, fx));
+
+  assign(0, 5, piano);           // pianos
+  assign(6, 7, harpsichord);     // harpsichord, clavinet
+  assign(8, 14, sine_mallet);    // celesta .. tubular bells
+  assign(15, 15, harp);          // dulcimer
+  assign(16, 18, tri_organ);     // drawbar / percussive / rock organ
+  assign(19, 20, sq_organ);      // church / reed organ
+  assign(21, 23, sq_reed);       // accordion, harmonica, bandoneon
+  assign(24, 28, guitar);        // nylon .. muted guitar
+  assign(29, 30, saw_lead);      // overdriven / distortion guitar
+  assign(31, 31, guitar);        // guitar harmonics
+  assign(32, 37, bass);          // acoustic / electric / slap bass
+  assign(38, 39, saw_pluck);     // synth bass
+  assign(40, 44, saw_strings);   // violin .. tremolo strings
+  assign(45, 45, guitar);        // pizzicato strings
+  assign(46, 46, harp);          // orchestral harp
+  assign(47, 47, sine_mallet);   // timpani
+  assign(48, 51, saw_strings);   // string ensembles
+  assign(52, 54, tri_pad);       // choir, voice oohs, synth voice
+  assign(55, 55, saw_pluck);     // orchestra hit
+  assign(56, 63, saw_brass);     // brass
+  assign(64, 71, sq_reed);       // saxes, oboe, english horn, bassoon, clarinet
+  assign(72, 79, tri_flute);     // piccolo .. ocarina
+  assign(80, 80, sq_lead);       // square lead
+  assign(81, 81, saw_lead);      // saw lead
+  assign(82, 83, tri_flute);     // calliope, chiff
+  assign(84, 84, saw_lead);      // charang
+  assign(85, 85, tri_pad);       // voice lead
+  assign(86, 87, saw_lead);      // fifths, bass + lead
+  assign(88, 89, tri_pad);       // new age, warm
+  assign(90, 90, saw_pad);       // polysynth
+  assign(91, 91, tri_pad);       // choir pad
+  assign(92, 93, saw_pad);       // bowed, metallic
+  assign(94, 94, tri_pad);       // halo
+  assign(95, 95, saw_pad);       // sweep
+  assign(96, 103, tri_fx);       // synth effects
+  assign(104, 104, harpsichord); // sitar
+  assign(105, 105, guitar);      // banjo
+  assign(106, 107, harpsichord); // shamisen, koto
+  assign(108, 108, sine_mallet); // kalimba
+  assign(109, 109, sq_reed);     // bagpipe
+  assign(110, 110, saw_strings); // fiddle
+  assign(111, 111, sq_reed);     // shanai
+  assign(112, 118, sine_mallet); // tinkle bell .. synth drum
+  assign(119, 127, tri_fx);      // reverse cymbal, sound effects
+}
+
 void MidiSynth::Initialize() {
   if (initialized_ == true)
     return;
@@ -97,85 +193,25 @@ void MidiSynth::Initialize() {
   last_event = nullptr;
   samples_to_next_event = 0;
 
-  //initialize all available instruments
-  
-  {
-    auto inst = new instruments::KarplusStrong();//instruments::Piano();
-    /*decltype(inst->data) data = { // 0
-			// Oscillator 1
-			7, // Octave knob
-			0, // Detune knob
-			0, // Actual detune knob
-			0, // Multiply freq by envelope
-			192, // Volume knob
-			2, // Wave form
-			// Oscillator 2
-			8, // Octave knob
-			0, // Detune knob
-			0, // Actual detune knob
-			0, // Multiply freq by envelope
-			157, // Volume knob
-			3, // Wave form
-			// Noise oscillator
-			0, // Amount of noise to add
-			// Envelope
-			100, // Attack
-			2727, // Sustain
-			22727, // Release
-			185, // Master volume knob
-			// Effects
-			2, // Hi/lo/bandpass or notch toggle
-			11024, // FX Frequency
-			240, // FX Resonance
-			6, // Delay time
-			132, // Delay amount
-			0, // Panning frequency
-			171, // Panning amount
-			// LFO
-			0, // Modify osc1 freq (FM) toggle
-			1, // Modify fx freq toggle
-			0, // LFO freq
-			207, // LFO amount
-			0, // LFO waveform
-			
-		};
-    memcpy(&inst->data,&data,sizeof(data));*/
-    instr[0] = nullptr;//inst
-  }
-  instr[2] = new instruments::OscWave(instruments::OscWave::Triangle);
-
-  //instr[40] = new instruments::OscWave(instruments::OscWave::Triangle);///new instruments::Violin();
-
-  //instr[48] = new instruments::OscWave(instruments::OscWave::Triangle);///new instruments::Pad();//strings1
-  //instr[49] = new instruments::OscWave(instruments::OscWave::Triangle);///new instruments::Pad();
-
-  instr[80] = new instruments::OscWave(instruments::OscWave::Square);
-  instr[81] = new instruments::OscWave(instruments::OscWave::Sawtooth);
-  for (int i=0;i<kInstrumentCount;++i) {
-    if (instr[i] == nullptr)
-      instr[i] = new instruments::OscWave(instruments::OscWave::Sine);
-    instr[i]->set_sample_rate(sample_rate_);
-    // Load everything up front (cheap): a live program change can pick any instrument on
-    // the audio thread, and an unloaded one has no oscillator yet.
-    instr[i]->Load();
-  }
+  BuildInstrumentBank();
 
   for (int i=0;i<kChannelCount;++i) {
     buffers.channels[i] = new real_t[buffers.main_size];
     memset(buffers.channels[i],0,sizeof(real_t)*buffers.main_size);
+    buffers.mono[i] = new real_t[buffers.main_size / 2];
     channels[i] = new Channel(i);
     channels[i]->set_sample_rate(sample_rate_);
     channels[i]->set_buffer(buffers.channels[i]);
-    //channels[i]->set_buffer_length(400.0f);
+    channels[i]->set_mono_buffer(buffers.mono[i], uint32_t(buffers.main_size / 2));
     channels[i]->set_instrument(instr[0]);
     channels[i]->set_silence(true);
     channels[i]->set_panning(0.5f);
-    channels[i]->set_amplification(0.7f);
+    channels[i]->set_amplification(100 / 127.0f);  // GM default volume (CC7 = 100)
   }
   //percussion
   percussion_instr = new instruments::Percussion();
   percussion_instr->set_sample_rate(sample_rate_);
-  percussion_instr->Load();
+  percussion_instr->Prepare();
   channels[9]->set_instrument(percussion_instr);
 
   delay_unit.Initialize(uint32_t(sample_rate_*2));
@@ -211,11 +247,12 @@ void MidiSynth::Deinitialize() {
   for (int i=0;i<kChannelCount;++i) {
     SafeDelete(&channels[i]);
     SafeDeleteArray(&buffers.channels[i]);
+    SafeDeleteArray(&buffers.mono[i]);
   }
   SafeDelete(&percussion_instr);
-  for (int i=0;i<kInstrumentCount;++i) {
-    SafeDelete(&instr[i]);
-  }
+  // instr[] only points into the store (several programs share one instrument).
+  memset(instr, 0, sizeof(instr));
+  instrument_store_.clear();
   SafeDeleteArray(&buffers.aux);
   SafeDeleteArray(&buffers.main);
   initialized_ = false;
@@ -385,8 +422,10 @@ void MidiSynth::RenderIdleStereo(uint32_t samples_count, real_t* data_out) {
 
 void MidiSynth::AllNotesOff() {
   for (int i=0;i<kChannelCount;++i) {
-    if (channels[i] != nullptr)
+    if (channels[i] != nullptr) {
+      channels[i]->set_sustain(false);  // a pedal left down by the file would hold new notes
       channels[i]->AllNotesOff();
+    }
   }
 }
 
@@ -418,10 +457,6 @@ void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) 
       }
       break;
     case 0xB0:
-      if (data1 == 120 || data1 == 123) {  // All Sound Off / All Notes Off
-        channels[channel]->AllNotesOff();
-        return;
-      }
       ev.subtype = midi::kEventSubtypeController;
       ev.data.controller.type = data1;
       ev.data.controller.value = data2;
@@ -771,37 +806,57 @@ void MidiSynth::MidiEventProgramChange(midi::Event* event) {
 
 void MidiSynth::MidiEventController(midi::Event* event) {
   auto channel = channels[event->channel];
-  if (event->data.controller.type == 0x06) { //data entry slider coarse
-    if (channel->param_coarse == 0) {
-      channel->des_coarse = event->data.controller.value;
-      real_t p = ((real_t)channel->des_coarse*0.5f) + ((real_t)channel->des_fine / 100.0f);
-      channel->set_pitch_bend_range(p);
-    }
-  } else if (event->data.controller.type == 0x26) { //data entry slider fine
-    if (channel->param_fine == 0) {
-      channel->des_fine = event->data.controller.value;
-      real_t p = ((real_t)channel->des_coarse) + ((real_t)channel->des_fine / 100.0f);
-      channel->set_pitch_bend_range(p);
-    }
-  } else if (event->data.controller.type == 0x0A) { //pan
-    real_t pan = event->data.controller.value / 127.0f;
-    channel->set_panning(pan);
-  } else if (event->data.controller.type == 0x49) { //sound attack time
-    real_t time = event->data.controller.value / 127.0f;
-    //channel->adsr[0].set
-  } else if (event->data.controller.type == 0x07) { //main volume
-    real_t vol = event->data.controller.value / 127.0f;
-    channel->set_amplification(vol);
-  } else if (event->data.controller.type == 0x64) { //RPN coarse
-    channel->param_coarse = event->data.controller.value;
-  } else if (event->data.controller.type == 0x65) { //RPN fine
-    channel->param_fine = event->data.controller.value;
+  const uint8_t value = event->data.controller.value;
+  // param_coarse/param_fine hold the selected RPN (MSB/LSB); 127/127 = none.
+  const bool bend_range_selected = channel->param_coarse == 0 && channel->param_fine == 0;
+  switch (event->data.controller.type) {
+    case 0x06:  // data entry MSB: pitch bend range in semitones
+      if (bend_range_selected) {
+        channel->des_coarse = value;
+        channel->set_pitch_bend_range(real_t(channel->des_coarse) + channel->des_fine / 100.0f);
+      }
+      break;
+    case 0x26:  // data entry LSB: cents
+      if (bend_range_selected) {
+        channel->des_fine = value;
+        channel->set_pitch_bend_range(real_t(channel->des_coarse) + channel->des_fine / 100.0f);
+      }
+      break;
+    case 0x07:  // channel volume
+      channel->set_amplification(value / 127.0f);
+      break;
+    case 0x0A:  // pan
+      channel->set_panning(value / 127.0f);
+      break;
+    case 0x0B:  // expression
+      channel->set_expression(value / 127.0f);
+      break;
+    case 0x40:  // sustain (damper) pedal
+      channel->set_sustain(value >= 64);
+      break;
+    case 0x62: case 0x63:  // NRPN select: deselect RPN so data entry doesn't hit bend range
+      channel->param_coarse = channel->param_fine = 127;
+      break;
+    case 0x64:  // RPN LSB
+      channel->param_fine = value;
+      break;
+    case 0x65:  // RPN MSB
+      channel->param_coarse = value;
+      break;
+    case 0x78:  // all sound off
+    case 0x7B:  // all notes off
+      channel->AllNotesOff();
+      break;
+    case 0x79:  // reset all controllers
+      channel->ResetControllers();
+      break;
   }
 }
 
 void MidiSynth::MidiEventPitchBend(midi::Event* event) {
   auto channel = channels[event->channel];
-  real_t amount = ((event->data.pitch.value - 8192) / 16384.0f)*channel->pitch_bend_range();
+  // 14-bit value, 8192 = centre; full deflection = +-pitch_bend_range semitones.
+  real_t amount = ((int(event->data.pitch.value) - 8192) / 8192.0f) * channel->pitch_bend_range();
   channel->SetPitchBend(amount);
 }
 

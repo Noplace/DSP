@@ -70,8 +70,10 @@ class RealtimePlayer : public SynthHost {
 
   State state() const { return static_cast<State>(state_.load()); }
   double GetPlaybackSeconds() const;
-  // Highest absolute output sample since the last call (0..1, before device clipping).
+  // Highest absolute output sample since the last call (after the limiter).
   float TakePeakLevel() { return peak_level_.exchange(0.0f); }
+  // Smallest limiter gain since the last call (1 = not limiting).
+  float TakeLimiterGain() { return limiter_min_gain_.exchange(1.0f); }
   const output::WasapiOutput& output() const { return output_; }
   const char* last_error() const { return output_.last_error(); }
 
@@ -79,12 +81,16 @@ class RealtimePlayer : public SynthHost {
   static void RenderThunk(void* user, float* stereo_out, uint32_t frames);
   void Render(float* stereo_out, uint32_t frames);
   void DispatchMidi(uint32_t message);
+  void Limit(float* stereo, uint32_t frames);
 
   output::WasapiOutput output_;
   Synth* synth_;
   midi::MidiInput* midi_input_;
   midi::SpscMessageQueue<512> ui_queue_;
   std::atomic<float> peak_level_;
+  // Master limiter (audio thread only, except the atomic meter)
+  float limiter_threshold_, limiter_release_coef_, limiter_envelope_;
+  std::atomic<float> limiter_min_gain_;
   std::mutex synth_lock_;
   std::atomic<int> desired_state_;
   std::atomic<int> state_;

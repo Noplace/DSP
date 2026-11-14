@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <memory>
 #include "../base.h"
 #include "../adsr.h"
 
@@ -37,10 +38,16 @@ class InstrumentData {
   }
 };
 
+// An instrument owns a pool of Polyphony voices (index 0..Polyphony-1). All per-voice state
+// (envelope, oscillator phase, string buffers...) lives in the instrument, and channels borrow
+// voices from the pool, so several channels can play the same instrument without sharing a
+// voice. Each allocation bumps the voice's generation; a channel holding an older generation
+// knows its voice was stolen.
 class InstrumentProcessor : public Component {
  public:
-  InstrumentProcessor() : Component() , loaded_(false) {
-   
+  InstrumentProcessor() : Component() , loaded_(false), age_counter_(0) {
+    memset(voice_gen_, 0, sizeof(voice_gen_));
+    memset(voice_age_, 0, sizeof(voice_age_));
   }
   virtual ~InstrumentProcessor() {
 
@@ -53,9 +60,76 @@ class InstrumentProcessor : public Component {
   virtual int NoteOn(int note_index) = 0;
   virtual int NoteOff(int note_index) = 0;
   virtual void set_instrument_data(InstrumentData* idata) = 0;
+
+  // Still producing sound (attack/decay/sustain/release)?
+  virtual bool IsVoiceActive(int v) const { return adsr[v].stage() != 0; }
+  // Pitch change on a sounding voice (pitch bend). Instruments that can't glide may ignore it.
+  virtual void BendFrequency(real_t freq, int v) { SetFrequency(freq, v); }
+
+  // Load and bind the voice state. Call once, off the audio thread.
+  void Prepare() {
+    Load();
+    if (!data_) {
+      data_.reset(NewInstrumentData());
+      set_instrument_data(data_.get());
+    }
+  }
+
+  // Pick a voice: a silent one if possible, else the quietest releasing voice, else the oldest.
+  int AllocateVoice(uint32_t& generation) {
+    int best = -1;
+    for (int v = 0; v < Polyphony && best < 0; ++v) {
+      if (!data_->note_data_array[v].on && !IsVoiceActive(v))
+        best = v;
+    }
+    if (best < 0) {
+      real_t lowest = 1e9f;
+      for (int v = 0; v < Polyphony; ++v) {
+        if (!data_->note_data_array[v].on && adsr[v].value() < lowest) {
+          lowest = adsr[v].value();
+          best = v;
+        }
+      }
+    }
+    if (best < 0) {
+      uint32_t oldest = 0xFFFFFFFF;
+      for (int v = 0; v < Polyphony; ++v) {
+        if (voice_age_[v] < oldest) {
+          oldest = voice_age_[v];
+          best = v;
+        }
+      }
+    }
+    voice_age_[best] = ++age_counter_;
+    generation = ++voice_gen_[best];
+    return best;
+  }
+  void StartVoice(int v, int note, real_t freq, real_t velocity) {
+    auto& nd = data_->note_data_array[v];
+    nd.note = note;
+    nd.velocity = velocity;
+    nd.on = true;
+    SetFrequency(freq, v);
+    NoteOn(v);
+  }
+  void ReleaseVoice(int v) {
+    auto& nd = data_->note_data_array[v];
+    if (!nd.on)
+      return;
+    nd.on = false;
+    NoteOff(v);
+  }
+  uint32_t voice_generation(int v) const { return voice_gen_[v]; }
+
  protected:
   ADSR adsr[Polyphony];
   bool loaded_;
+
+ private:
+  std::unique_ptr<InstrumentData> data_;
+  uint32_t voice_gen_[Polyphony];
+  uint32_t voice_age_[Polyphony];
+  uint32_t age_counter_;
 };
 
 }

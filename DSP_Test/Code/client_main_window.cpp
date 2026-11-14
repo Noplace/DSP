@@ -30,6 +30,7 @@ ClientMainWindow::ClientMainWindow() {
   program_ = 0;
   memset(held_note_, 0, sizeof(held_note_));
   level_db_ = -120.0f;
+  limiter_db_ = 0.0f;
   font_ = nullptr;
   memset(display,0,sizeof(display));
   display[0].style = WS_VISIBLE | WS_BORDER|WS_CAPTION|WS_MINIMIZEBOX|WS_SYSMENU|WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
@@ -156,6 +157,7 @@ void ClientMainWindow::SendLive(uint8_t status, uint8_t data1, uint8_t data2) {
 }
 
 void ClientMainWindow::ReleaseHeldNotes() {
+  SendLive(0xB0, 64, 0);  // sustain pedal up as well
   for (int vk = 0; vk < 256; ++vk) {
     if (held_note_[vk]) {
       SendLive(0x80, uint8_t(held_note_[vk] - 1), 64);
@@ -187,6 +189,35 @@ const char* NoteName(int note) {
   return names[note % 12];
 }
 
+const char* GmProgramName(int program) {
+  static const char* names[128] = {
+    "Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano", "Honky-tonk Piano",
+    "Electric Piano 1", "Electric Piano 2", "Harpsichord", "Clavinet",
+    "Celesta", "Glockenspiel", "Music Box", "Vibraphone", "Marimba", "Xylophone", "Tubular Bells", "Dulcimer",
+    "Drawbar Organ", "Percussive Organ", "Rock Organ", "Church Organ", "Reed Organ", "Accordion", "Harmonica",
+    "Tango Accordion",
+    "Nylon Guitar", "Steel Guitar", "Jazz Guitar", "Clean Guitar", "Muted Guitar", "Overdriven Guitar",
+    "Distortion Guitar", "Guitar Harmonics",
+    "Acoustic Bass", "Fingered Bass", "Picked Bass", "Fretless Bass", "Slap Bass 1", "Slap Bass 2",
+    "Synth Bass 1", "Synth Bass 2",
+    "Violin", "Viola", "Cello", "Contrabass", "Tremolo Strings", "Pizzicato Strings", "Orchestral Harp", "Timpani",
+    "String Ensemble 1", "String Ensemble 2", "Synth Strings 1", "Synth Strings 2", "Choir Aahs", "Voice Oohs",
+    "Synth Voice", "Orchestra Hit",
+    "Trumpet", "Trombone", "Tuba", "Muted Trumpet", "French Horn", "Brass Section", "Synth Brass 1", "Synth Brass 2",
+    "Soprano Sax", "Alto Sax", "Tenor Sax", "Baritone Sax", "Oboe", "English Horn", "Bassoon", "Clarinet",
+    "Piccolo", "Flute", "Recorder", "Pan Flute", "Blown Bottle", "Shakuhachi", "Whistle", "Ocarina",
+    "Square Lead", "Saw Lead", "Calliope Lead", "Chiff Lead", "Charang Lead", "Voice Lead", "Fifths Lead",
+    "Bass + Lead",
+    "New Age Pad", "Warm Pad", "Polysynth Pad", "Choir Pad", "Bowed Pad", "Metallic Pad", "Halo Pad", "Sweep Pad",
+    "Rain FX", "Soundtrack FX", "Crystal FX", "Atmosphere FX", "Brightness FX", "Goblins FX", "Echoes FX",
+    "Sci-fi FX",
+    "Sitar", "Banjo", "Shamisen", "Koto", "Kalimba", "Bagpipe", "Fiddle", "Shanai",
+    "Tinkle Bell", "Agogo", "Steel Drums", "Woodblock", "Taiko Drum", "Melodic Tom", "Synth Drum", "Reverse Cymbal",
+    "Guitar Fret Noise", "Breath Noise", "Seashore", "Bird Tweet", "Telephone Ring", "Helicopter", "Applause",
+    "Gunshot"};
+  return names[program & 127];
+}
+
 }  // namespace
 
 void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
@@ -202,6 +233,8 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
       if (PromptForMidiFile(path, sizeof(path)))
         OpenMidi(path);
     }
+  } else if (key == VK_SHIFT) {
+    if (!repeat) SendLive(0xB0, 64, 127);  // sustain pedal down
   } else if (key == VK_SPACE) {
     if (!repeat) synth_player_->TogglePause();
   } else if (key == VK_ESCAPE) {
@@ -231,6 +264,10 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
 }
 
 void ClientMainWindow::OnKeyUp(WPARAM key) {
+  if (key == VK_SHIFT) {
+    SendLive(0xB0, 64, 0);  // sustain pedal up
+    return;
+  }
   if (key < 256 && held_note_[key]) {
     SendLive(0x80, uint8_t(held_note_[key] - 1), 64);
     held_note_[key] = 0;
@@ -241,6 +278,7 @@ void ClientMainWindow::OnTimer() {
   if (synth_player_ != nullptr) {
     float peak = synth_player_->TakePeakLevel();
     level_db_ = peak > 0.000001f ? 20.0f * log10f(peak) : -120.0f;
+    limiter_db_ = 20.0f * log10f(synth_player_->TakeLimiterGain());
   }
   UpdateTitle();
   InvalidateRect(handle_, nullptr, FALSE);
@@ -255,9 +293,9 @@ void ClientMainWindow::UpdateTitle() {
     static const char* state_names[] = {"Stopped", "Playing", "Paused"};
     int pos = (int)synth_player_->GetPlaybackSeconds();
     int len = (int)(synth_player_->song_length_ms / 1000.0);
-    sprintf_s(text, "%s - %s [%s %d:%02d / %d:%02d] level %.0f dB", title_,
+    sprintf_s(text, "%s - %s [%s %d:%02d / %d:%02d] level %.0f dB limiter %.1f dB", title_,
               midi_name_[0] ? midi_name_ : "(no file)", state_names[synth_player_->state()],
-              pos / 60, pos % 60, len / 60, len % 60, level_db_);
+              pos / 60, pos % 60, len / 60, len % 60, level_db_, limiter_db_);
   }
   SetWindowTextA(handle_, text);
 }
@@ -282,8 +320,9 @@ void ClientMainWindow::Paint() {
               state_names[synth_player_->state()], pos / 60, pos % 60, len / 60, len % 60);
     char level[32];
     if (level_db_ <= -100.0f) strcpy_s(level, "-inf"); else sprintf_s(level, "%.1f", level_db_);
-    sprintf_s(lines[n++], "Audio   WASAPI %u Hz, %.2f ms period (%s)   level %s dB", out.sample_rate(),
-              out.period_ms(), out.low_latency_mode() ? "low-latency" : "default period", level);
+    sprintf_s(lines[n++], "Audio   WASAPI %u Hz, %.2f ms period (%s)", out.sample_rate(), out.period_ms(),
+              out.low_latency_mode() ? "low-latency" : "default period");
+    sprintf_s(lines[n++], "Output  level %s dB   limiter %.1f dB", level, limiter_db_);
   } else {
     sprintf_s(lines[n++], "Audio   no audio device");
   }
@@ -296,16 +335,16 @@ void ClientMainWindow::Paint() {
       len += sprintf_s(lines[n] + len, sizeof(lines[n]) - len, " [%s]", midi_input_.port_name(i));
     ++n;
   }
-  sprintf_s(lines[n++], "PC keys Z = %s%d, program %d (channel 1)", NoteName(octave_base_), octave_base_ / 12 - 1,
-            program_ + 1);
-  n++;
+  sprintf_s(lines[n++], "PC keys Z = %s%d, program %d %s (channel 1)", NoteName(octave_base_), octave_base_ / 12 - 1,
+            program_ + 1, GmProgramName(program_));
+  const int status_lines = n++;  // bright status lines, then a gap, then dimmer help
   sprintf_s(lines[n++], "Space play/pause file   Esc stop   Ctrl+O open file   F5 rescan MIDI ports");
   sprintf_s(lines[n++], "Z S X D C V G B H N J M ,   and   Q 2 W 3 E R 5 T 6 Y 7 U I   play notes");
-  sprintf_s(lines[n++], "Up/Down octave   Left/Right program");
+  sprintf_s(lines[n++], "Up/Down octave   Left/Right program   Shift sustain pedal");
 
   int y = 12;
   for (int i = 0; i < n; ++i) {
-    SetTextColor(dc, i < 4 ? RGB(230, 230, 230) : RGB(150, 150, 150));
+    SetTextColor(dc, i < status_lines ? RGB(230, 230, 230) : RGB(150, 150, 150));
     TextOutA(dc, 14, y, lines[i], (int)strlen(lines[i]));
     y += 22;
   }

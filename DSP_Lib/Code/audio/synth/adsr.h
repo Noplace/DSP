@@ -61,9 +61,13 @@ class ADSR : public Component {
     decay_rate_ = (attack_amp_ - sustain_amp_) * sample_time_ms_ / decay_time_ms;
   }
   void set_release_time_ms(real_t release_time_ms) {
-    release_rate_ = (sustain_amp_) * sample_time_ms_ / release_time_ms;
+    // Release ramps from the sustain level; for percussive envelopes (sustain 0) use the
+    // attack level instead, otherwise the rate would be 0 and the note would never end.
+    real_t from = sustain_amp_ > 0 ? sustain_amp_ : attack_amp_;
+    release_rate_ = from * sample_time_ms_ / release_time_ms;
   }
-  int stage() { return stage_; }
+  int stage() const { return stage_; }
+  real_t value() const { return value_; }
  protected:
   typedef void (ADSR::*StageFunc)();
   int stage_;
