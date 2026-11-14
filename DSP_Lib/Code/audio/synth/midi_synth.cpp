@@ -77,12 +77,11 @@ const MidiSynth::MidiEventHandler MidiSynth::midi_channel_event_handlers[23] = {
 };
 
 // General MIDI program -> instrument. Programs that should sound alike share one instrument
-// (and its voice pool). Plucked and struck strings use Karplus-Strong; everything else uses
+// (and its voice pool). Plucked and struck strings use digital waveguides; everything else uses
 // oscillator waves with an envelope that suits the family.
 void MidiSynth::BuildInstrumentBank() {
   using instruments::Envelope;
   using instruments::OscWave;
-  using instruments::KarplusStrong;
 
   auto add = [&](instruments::InstrumentProcessor* inst) {
     inst->set_sample_rate(sample_rate_);
@@ -107,11 +106,14 @@ void MidiSynth::BuildInstrumentBank() {
   const Envelope pad     = {0.3f,  0.28f,  450.0f,  100.0f, 700.0f};
   const Envelope fx      = {0.4f,  0.30f,  200.0f,  200.0f, 500.0f};
 
-  auto harpsichord = add(new KarplusStrong(12000.0f, 40.0f));
-  auto piano       = add(new KarplusStrong(7000.0f, 250.0f));
-  auto guitar      = add(new KarplusStrong(5000.0f, 150.0f));
-  auto bass        = add(new KarplusStrong(2500.0f, 100.0f));
-  auto harp        = add(new KarplusStrong(9000.0f, 600.0f));
+  using instruments::WaveguideString;
+  auto harpsichord = add(new WaveguideString(WaveguideString::Harpsichord()));
+  auto piano       = add(new WaveguideString(WaveguideString::Piano()));
+  auto guitar      = add(new WaveguideString(WaveguideString::NylonGuitar()));
+  auto steel       = add(new WaveguideString(WaveguideString::SteelGuitar()));
+  auto muted       = add(new WaveguideString(WaveguideString::MutedGuitar()));
+  auto bass        = add(new WaveguideString(WaveguideString::Bass()));
+  auto harp        = add(new WaveguideString(WaveguideString::Harp()));
   auto sine_mallet = add(new OscWave(OscWave::Sine, mallet));
   auto tri_organ   = add(new OscWave(OscWave::Triangle, organ));
   auto sq_organ    = add(new OscWave(OscWave::Square, Envelope{0.25f, 0.25f, 6.0f, 1.0f, 60.0f}));
@@ -133,13 +135,15 @@ void MidiSynth::BuildInstrumentBank() {
   assign(16, 18, tri_organ);     // drawbar / percussive / rock organ
   assign(19, 20, sq_organ);      // church / reed organ
   assign(21, 23, sq_reed);       // accordion, harmonica, bandoneon
-  assign(24, 28, guitar);        // nylon .. muted guitar
+  assign(24, 24, guitar);        // nylon guitar
+  assign(25, 27, steel);         // steel, jazz, clean electric
+  assign(28, 28, muted);         // muted guitar
   assign(29, 30, saw_lead);      // overdriven / distortion guitar
-  assign(31, 31, guitar);        // guitar harmonics
+  assign(31, 31, steel);         // guitar harmonics
   assign(32, 37, bass);          // acoustic / electric / slap bass
   assign(38, 39, saw_pluck);     // synth bass
   assign(40, 44, saw_strings);   // violin .. tremolo strings
-  assign(45, 45, guitar);        // pizzicato strings
+  assign(45, 45, muted);         // pizzicato strings
   assign(46, 46, harp);          // orchestral harp
   assign(47, 47, sine_mallet);   // timpani
   assign(48, 51, saw_strings);   // string ensembles
@@ -162,7 +166,7 @@ void MidiSynth::BuildInstrumentBank() {
   assign(95, 95, saw_pad);       // sweep
   assign(96, 103, tri_fx);       // synth effects
   assign(104, 104, harpsichord); // sitar
-  assign(105, 105, guitar);      // banjo
+  assign(105, 105, steel);       // banjo
   assign(106, 107, harpsichord); // shamisen, koto
   assign(108, 108, sine_mallet); // kalimba
   assign(109, 109, sq_reed);     // bagpipe

@@ -88,8 +88,7 @@ class RealtimePlayer : public SynthHost {
   midi::MidiInput* midi_input_;
   midi::SpscMessageQueue<512> ui_queue_;
   std::atomic<float> peak_level_;
-  // Master limiter (audio thread only, except the atomic meter)
-  float limiter_threshold_, limiter_release_coef_, limiter_envelope_;
+  effects::MasterLimiter limiter_;  // audio thread only
   std::atomic<float> limiter_min_gain_;
   std::mutex synth_lock_;
   std::atomic<int> desired_state_;

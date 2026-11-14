@@ -63,6 +63,8 @@ class InstrumentProcessor : public Component {
 
   // Still producing sound (attack/decay/sustain/release)?
   virtual bool IsVoiceActive(int v) const { return adsr[v].stage() != 0; }
+  // Rough current loudness of a voice (used to pick which releasing voice to steal).
+  virtual real_t VoiceLevel(int v) const { return adsr[v].value(); }
   // Pitch change on a sounding voice (pitch bend). Instruments that can't glide may ignore it.
   virtual void BendFrequency(real_t freq, int v) { SetFrequency(freq, v); }
 
@@ -85,8 +87,8 @@ class InstrumentProcessor : public Component {
     if (best < 0) {
       real_t lowest = 1e9f;
       for (int v = 0; v < Polyphony; ++v) {
-        if (!data_->note_data_array[v].on && adsr[v].value() < lowest) {
-          lowest = adsr[v].value();
+        if (!data_->note_data_array[v].on && VoiceLevel(v) < lowest) {
+          lowest = VoiceLevel(v);
           best = v;
         }
       }

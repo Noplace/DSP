@@ -49,6 +49,7 @@
 #include "audio/synth/filters/iir_filter.h"
 #include "audio/synth/effects/effect.h"
 #include "audio/synth/effects/delay.h"
+#include "audio/synth/effects/limiter.h"
 
 #include "audio/synth/oscillators/oscillator.h"
 #include "audio/synth/oscillators/sine_oscillator.h"
@@ -67,6 +68,7 @@
 #include "audio/synth/instruments/percussion.h"
 #include "audio/synth/instruments/blit.h"
 #include "audio/synth/instruments/karplusstrong.h"
+#include "audio/synth/instruments/waveguide_string.h"
 //#include "audio/synth/instruments/sonant_program.h"
 //#include "audio/synth/instruments/waveguide_synthesis.h"
 #include "audio/synth/channel.h"

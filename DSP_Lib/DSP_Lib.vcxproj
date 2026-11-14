@@ -86,6 +86,7 @@
     <ClInclude Include="Code\audio\synth\channel.h" />
     <ClInclude Include="Code\audio\synth\component.h" />
     <ClInclude Include="Code\audio\synth\effects\delay.h" />
+    <ClInclude Include="Code\audio\synth\effects\limiter.h" />
     <ClInclude Include="Code\audio\synth\effects\effect.h" />
     <ClInclude Include="Code\audio\synth\filters\chebyshev_filter.h" />
     <ClInclude Include="Code\audio\synth\filters\iir_filter.h" />
@@ -96,6 +97,7 @@
     <ClInclude Include="Code\audio\synth\instruments\osc_wave.h" />
     <ClInclude Include="Code\audio\synth\instruments\percussion.h" />
     <ClInclude Include="Code\audio\synth\instruments\waveguide_synthesis.h" />
+    <ClInclude Include="Code\audio\synth\instruments\waveguide_string.h" />
     <ClInclude Include="Code\audio\synth\midi_synth.h" />
     <ClInclude Include="Code\audio\synth\misc.h" />
     <ClInclude Include="Code\audio\synth\oscillators\exp_oscillator.h" />
@@ -127,6 +129,7 @@
     <ClCompile Include="Code\audio\output\wasapi_output.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\blit.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\percussion.cpp" />
+    <ClCompile Include="Code\audio\synth\instruments\waveguide_string.cpp" />
     <ClCompile Include="Code\audio\synth\midi_synth.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\exp_oscillator.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\sawtooth_oscillator.cpp" />

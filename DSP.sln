@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DSP_Test", "DSP_Test\DSP.vc
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DSP_Lib", "DSP_Lib\DSP_Lib.vcxproj", "{8808D755-CE8C-4ACF-81A3-2EAA29BB21C8}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DSP_Render", "DSP_Render\DSP_Render.vcxproj", "{003BB506-8453-423F-B87E-7DA1CF3BB253}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -31,6 +33,14 @@ Global
 		{8808D755-CE8C-4ACF-81A3-2EAA29BB21C8}.Debug|Win32.Build.0 = Debug|Win32
 		{8808D755-CE8C-4ACF-81A3-2EAA29BB21C8}.Release|Win32.ActiveCfg = Release|Win32
 		{8808D755-CE8C-4ACF-81A3-2EAA29BB21C8}.Release|Win32.Build.0 = Release|Win32
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Debug|x64.ActiveCfg = Debug|x64
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Debug|x64.Build.0 = Debug|x64
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Release|x64.ActiveCfg = Release|x64
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Release|x64.Build.0 = Release|x64
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Debug|Win32.ActiveCfg = Debug|Win32
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Debug|Win32.Build.0 = Debug|Win32
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Release|Win32.ActiveCfg = Release|Win32
+		{003BB506-8453-423F-B87E-7DA1CF3BB253}.Release|Win32.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
