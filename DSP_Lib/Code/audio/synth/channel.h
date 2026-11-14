@@ -66,6 +66,18 @@ class Channel : public Component {
     instrument_->NoteOn(current_note);
     current_note = (current_note + 1) % Polyphony;
   }
+  void AllNotesOff() {
+    if (instrument_ == nullptr || instrument_data_ == nullptr)
+      return;
+    instrument_->set_instrument_data(instrument_data_);
+    for (int i=0;i<Polyphony;++i) {
+      auto* ptr = &instrument_data_->note_data_array[i];
+      if (ptr->on) {
+        ptr->on = false;
+        instrument_->NoteOff(i);
+      }
+    }
+  }
   void RemoveNote(int note,real_t velocity) {
     instrument_->set_instrument_data(instrument_data_);
     for (int i=0;i<Polyphony;++i) {

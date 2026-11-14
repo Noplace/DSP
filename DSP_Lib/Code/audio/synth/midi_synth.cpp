@@ -155,11 +155,11 @@ void MidiSynth::Initialize() {
     if (instr[i] == nullptr)
       instr[i] = new instruments::OscWave(instruments::OscWave::Sine);
     instr[i]->set_sample_rate(sample_rate_);
+    // Load everything up front (cheap): a live program change can pick any instrument on
+    // the audio thread, and an unloaded one has no oscillator yet.
+    instr[i]->Load();
   }
 
-
-  instr[0]->Load();
-  
   for (int i=0;i<kChannelCount;++i) {
     buffers.channels[i] = new real_t[buffers.main_size];
     memset(buffers.channels[i],0,sizeof(real_t)*buffers.main_size);
@@ -377,6 +377,69 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
   Reset();
 }
 
+
+void MidiSynth::RenderIdleStereo(uint32_t samples_count, real_t* data_out) {
+  uint32_t data_offset = 0;
+  GenerateIntoBufferStereo(samples_count, data_out, data_offset);
+}
+
+void MidiSynth::AllNotesOff() {
+  for (int i=0;i<kChannelCount;++i) {
+    if (channels[i] != nullptr)
+      channels[i]->AllNotesOff();
+  }
+}
+
+void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) {
+  if (!initialized_ || status < 0x80 || status >= 0xF0)
+    return;  // running status is resolved by the driver; ignore system messages
+  const uint8_t type = status & 0xF0;
+  const uint8_t channel = status & 0x0F;
+  data1 &= 0x7F;
+  data2 &= 0x7F;
+
+  midi::Event ev;
+  ev.type = midi::kEventTypeChannel;
+  ev.channel = channel;
+  switch (type) {
+    case 0x80:
+      ev.subtype = midi::kEventSubtypeNoteOff;
+      ev.data.note.noteNumber = data1;
+      ev.data.note.velocity = data2 ? data2 : 64;
+      break;
+    case 0x90:
+      ev.data.note.noteNumber = data1;
+      if (data2 == 0) {  // note-on with velocity 0 means note-off
+        ev.subtype = midi::kEventSubtypeNoteOff;
+        ev.data.note.velocity = 64;
+      } else {
+        ev.subtype = midi::kEventSubtypeNoteOn;
+        ev.data.note.velocity = data2;
+      }
+      break;
+    case 0xB0:
+      if (data1 == 120 || data1 == 123) {  // All Sound Off / All Notes Off
+        channels[channel]->AllNotesOff();
+        return;
+      }
+      ev.subtype = midi::kEventSubtypeController;
+      ev.data.controller.type = data1;
+      ev.data.controller.value = data2;
+      break;
+    case 0xC0:
+      ev.subtype = midi::kEventSubtypeProgramChange;
+      ev.data.program.number = data1;
+      break;
+    case 0xE0:
+      ev.subtype = midi::kEventSubtypePitchBend;
+      ev.data.pitch.value = uint16_t(data1 | (data2 << 7));
+      break;
+    default:
+      return;  // aftertouch etc. not handled yet
+  }
+  channels[channel]->set_silence(false);
+  HandleEvent(&ev);
+}
 
 void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
 	uint32_t data_offset = 0;

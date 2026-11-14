@@ -34,6 +34,9 @@ namespace synth {
 //  - Anything that changes synth data from another thread (e.g. loading a MIDI file) must go
 //    through WithSynthLocked(). The audio thread only ever try_locks, so it never blocks: if
 //    the UI holds the lock it outputs silence for that buffer.
+//  - Live MIDI: messages from a MidiInput (hardware ports) and from PostMidiMessage() (one UI
+//    thread, e.g. a PC-keyboard piano) are applied at the start of each buffer. The synth keeps
+//    rendering while the file transport is stopped, so live notes always sound.
 class RealtimePlayer : public SynthHost {
  public:
   enum State { kStateStopped = 0, kStatePlaying = 1, kStatePaused = 2 };
@@ -57,17 +60,31 @@ class RealtimePlayer : public SynthHost {
     f();
   }
 
+  // Hardware MIDI input to drain every buffer (or nullptr). Call inside WithSynthLocked(), and
+  // open/close the input's ports inside it too.
+  void set_midi_input(midi::MidiInput* input) { midi_input_ = input; }
+  // Queue a live MIDI message from the (single) UI thread. Returns false if the queue is full.
+  bool PostMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) {
+    return ui_queue_.Push(midi::PackShortMessage(status, data1, data2));
+  }
+
   State state() const { return static_cast<State>(state_.load()); }
   double GetPlaybackSeconds() const;
+  // Highest absolute output sample since the last call (0..1, before device clipping).
+  float TakePeakLevel() { return peak_level_.exchange(0.0f); }
   const output::WasapiOutput& output() const { return output_; }
   const char* last_error() const { return output_.last_error(); }
 
  private:
   static void RenderThunk(void* user, float* stereo_out, uint32_t frames);
   void Render(float* stereo_out, uint32_t frames);
+  void DispatchMidi(uint32_t message);
 
   output::WasapiOutput output_;
   Synth* synth_;
+  midi::MidiInput* midi_input_;
+  midi::SpscMessageQueue<512> ui_queue_;
+  std::atomic<float> peak_level_;
   std::mutex synth_lock_;
   std::atomic<int> desired_state_;
   std::atomic<int> state_;

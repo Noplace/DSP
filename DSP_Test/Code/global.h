@@ -5,7 +5,5 @@
 #include <commdlg.h>
 // OpenGL visualiser (gl.h/gl.cpp, needs GLEW) is not part of the build for now.
 #include "..\..\DSP_Lib\Code\dsp.h"
-#include "..\..\DSP_Lib\Code\audio\output\wasapi_output.h"
-#include "..\..\DSP_Lib\Code\audio\synth\realtime_player.h"
 #include "client_main_window.h"
 

@@ -18,7 +18,6 @@
 *****************************************************************************************************************/
 #include <stdio.h>
 #include "../../dsp.h"
-#include "wasapi_output.h"
 #include <avrt.h>
 
 #pragma comment(lib, "ole32.lib")

@@ -46,7 +46,19 @@ class Synth : public Component {
   virtual void Initialize() = 0;
   virtual void Deinitialize() = 0;
   virtual void Reset() = 0;
+  // Renders the next block, advancing any sequencer (file playback).
   virtual void RenderSamplesStereo(uint32_t samples_count, real_t* data_out) = 0;
+
+  // Live input support. Called on the audio thread only.
+  // Renders without advancing the sequencer, so live notes and release tails keep sounding
+  // while file playback is stopped or paused.
+  virtual void RenderIdleStereo(uint32_t samples_count, real_t* data_out) {
+    memset(data_out, 0, sizeof(real_t) * samples_count * 2);
+  }
+  // A raw MIDI channel message (status byte + up to two data bytes).
+  virtual void HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) {}
+  // Release every sounding note on every channel.
+  virtual void AllNotesOff() {}
  protected:
 };
 

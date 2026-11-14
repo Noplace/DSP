@@ -17,16 +17,14 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "../../dsp.h"
-#include "../output/wasapi_output.h"
-#include "realtime_player.h"
 
 namespace dsp {
 namespace audio {
 namespace synth {
 
 RealtimePlayer::RealtimePlayer()
-    : synth_(nullptr), desired_state_(kStateStopped), state_(kStateStopped), rewind_requested_(false),
-      ready_(false), frames_played_(0) {
+    : synth_(nullptr), midi_input_(nullptr), peak_level_(0.0f), desired_state_(kStateStopped),
+      state_(kStateStopped), rewind_requested_(false), ready_(false), frames_played_(0) {
 }
 
 RealtimePlayer::~RealtimePlayer() {
@@ -100,20 +98,49 @@ void RealtimePlayer::Render(float* stereo_out, uint32_t frames) {
     return;
   }
 
-  if (rewind_requested_.exchange(false)) {
+  const int previous_state = state_.load();
+  const int new_state = desired_state_.load();
+  const bool rewind = rewind_requested_.exchange(false);
+  // Leaving playback: release the file's notes, otherwise they'd hang in the idle render.
+  if (rewind || (previous_state == kStatePlaying && new_state != kStatePlaying))
+    synth_->AllNotesOff();
+  if (rewind) {
     synth_->Reset();
+    // With no song loaded, Reset() itself calls Stop() ("no more events"). Don't let that
+    // queue another rewind, or we'd reset (and silence live notes) on every buffer.
+    rewind_requested_ = false;
     frames_played_ = 0;
   }
-  state_ = desired_state_.load();
+  state_ = new_state;
 
-  if (state_ == kStatePlaying) {
+  // Live input, applied at the start of the buffer (up to one period of timing jitter).
+  if (midi_input_ != nullptr)
+    midi_input_->Drain([this](uint32_t message) { DispatchMidi(message); });
+  uint32_t message;
+  while (ui_queue_.Pop(message))
+    DispatchMidi(message);
+
+  if (new_state == kStatePlaying) {
     synth_->RenderSamplesStereo(frames, stereo_out);
     frames_played_ += frames;
   } else {
-    memset(stereo_out, 0, sizeof(float) * frames * 2);
+    synth_->RenderIdleStereo(frames, stereo_out);
   }
 
   synth_lock_.unlock();
+
+  float peak = 0.0f;
+  for (uint32_t i = 0; i < frames * 2; ++i) {
+    float v = fabsf(stereo_out[i]);
+    if (v > peak) peak = v;
+  }
+  float current = peak_level_.load(std::memory_order_relaxed);
+  while (peak > current && !peak_level_.compare_exchange_weak(current, peak, std::memory_order_relaxed)) {
+  }
+}
+
+void RealtimePlayer::DispatchMidi(uint32_t message) {
+  synth_->HandleMidiMessage(uint8_t(message & 0xFF), uint8_t((message >> 8) & 0x7F), uint8_t((message >> 16) & 0x7F));
 }
 
 }

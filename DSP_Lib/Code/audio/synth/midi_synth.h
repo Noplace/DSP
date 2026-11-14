@@ -59,6 +59,9 @@ class MidiSynth : public Synth {
   void LoadMidiFromFile(const char* filename);
   void LoadMidi(uint8_t* data, size_t data_size);
   void RenderSamplesStereo(uint32_t samples_count, real_t* data_out);
+  void RenderIdleStereo(uint32_t samples_count, real_t* data_out) override;
+  void HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) override;
+  void AllNotesOff() override;
   void Reset() {
     ResetTracks();
   }

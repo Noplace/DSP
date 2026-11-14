@@ -34,10 +34,24 @@ class ClientMainWindow {
  private:
   bool PromptForMidiFile(char* path, size_t path_size);
   void OpenMidi(const char* path);
+  void RescanMidiInputs();
   void UpdateTitle();
+  void Paint();
+  void OnTimer();
+  void OnKeyDown(WPARAM key, LPARAM flags);
+  void OnKeyUp(WPARAM key);
+  void ReleaseHeldNotes();
+  void SendLive(uint8_t status, uint8_t data1, uint8_t data2);
 
   dsp::audio::synth::RealtimePlayer* synth_player_;
   dsp::audio::synth::MidiSynth*      midi_synth_;
+  dsp::audio::midi::MidiInput        midi_input_;
+  // PC-keyboard piano (live channel 1)
+  int octave_base_;          // MIDI note for the Z key
+  int program_;              // GM program number 0..127
+  uint8_t held_note_[256];   // per virtual key: note + 1 while held, 0 otherwise
+  float level_db_;
+  HFONT font_;
   dsp::audio::formats::SPCPlayer spc_player;
   char midi_name_[MAX_PATH];
   char title_[MAX_PATH];

@@ -28,8 +28,10 @@
 #include "io.h"
 
 #include "audio/midi/midi2.h"
+#include "audio/midi/midi_input.h"
 #include "audio/output/interface.h"
 #include "audio/output/directsound.h"
+#include "audio/output/wasapi_output.h"
 
 #include "audio/generalplayer.h"
 
@@ -73,3 +75,4 @@
 #include "audio/formats/spc.h"
 #include "audio/formats/spc_player.h"
 #include "audio/synth/player.h"
+#include "audio/synth/realtime_player.h"
