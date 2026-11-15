@@ -135,11 +135,12 @@ void MidiSynth::BuildInstrumentBank() {
       instruments::CalibratedStringOptions opt;
       opt.release_t60_s = 0.3f;
       opt.level = 0.35f;
-      opt.detune_cents = 0.6f;
+      opt.detune_cents = 0.6f;        // aftersound vs first stage (slow beating)
       opt.recorded_tuning = true;     // the piano's own stretched tuning
       opt.undamped_from_note = 89;    // top strings have no dampers (F6 up)
+      opt.modal_max_hz = 4000.0f;     // low partials with their measured two-stage decay
       grand = add(new instruments::CalibratedString(cal, opt));
-      opt.detune_cents = 12.0f;
+      opt.unison_detune_cents = 12.0f;
       honky_tonk = add(new instruments::CalibratedString(cal, opt));
       calibrated_instruments_.push_back("piano (" + cal->name + ")");
     }

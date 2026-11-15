@@ -315,6 +315,27 @@ int ConsensusOctave(const std::vector<std::pair<int, std::string>>& files) {
   return shift;
 }
 
+// Per-partial decays of a recorded note, for the instrument's resonator band. Implausible fits
+// (very short or longer than any piano partial rings) are left unmeasured; an aftersound counts
+// only when it is clearly slower than the first stage and neither buried nor dominant.
+std::vector<synth::instruments::PartialDecay> PartialDecays(const analysis::NoteAnalysis& a, int max_partials = 24) {
+  std::vector<synth::instruments::PartialDecay> out(max_partials);
+  for (const analysis::Partial& p : a.partials) {
+    if (p.n < 1 || p.n > max_partials || p.t60_s <= 0) continue;
+    synth::instruments::PartialDecay& d = out[p.n - 1];
+    const bool two_stage = p.after_db > -45 && p.after_db < -1 && p.after_t60_s > 1.2 * p.prompt_t60_s;
+    const double first = two_stage ? p.prompt_t60_s : p.t60_s;
+    if (first < 0.1 || first > 150) continue;
+    d.t60_s = float(first);
+    if (two_stage) {
+      d.after_t60_s = float(std::min(150.0, p.after_t60_s));
+      d.after_level = float(pow(10.0, p.after_db / 20.0));
+    }
+  }
+  while (!out.empty() && out.back().t60_s == 0) out.pop_back();
+  return out;
+}
+
 // Analyses every WAV in a folder and prints one summary line per note.
 int CmdSurvey(int argc, char** argv) {
   if (argc < 3) return 2;
@@ -375,7 +396,7 @@ int CmdCalibrate(int argc, char** argv) {
     if (groups.empty() || groups.back().first != named) groups.push_back({named, {}});
     groups.back().second.push_back({layer, path});
   }
-  printf("note  layers    f0 Hz        B   T60 f0  T60 2k  disp rms/max, filter | per layer: velocity, string removed, exc peak\n");
+  printf("note  layers    f0 Hz        B   T60 f0  T60 2k  disp rms/max, filter | per layer: velocity, string removed, exc peak, two-stage/measured partials\n");
   for (auto& [named, layers] : groups) {
     std::sort(layers.begin(), layers.end());
     // String parameters from the loudest layer (most partials above the noise).
@@ -397,15 +418,8 @@ int CmdCalibrate(int argc, char** argv) {
     cn.b3 = float(lp.b3);
     cn.peak = float(a.peak);
     cn.excitation_rate = audio.rate;
-    if (a.after_db > -40 && a.after_db < -3) {  // a clear aftersound: two strings
-      // First string keeps the overall decay -- the loop the excitation is recovered with, so
-      // resynthesis stays consistent; the second string adds the slower aftersound.
-      cn.after_b1 = float(std::max(0.005, a.after_b1));
-      cn.after_b3 = float(std::max(0.0, a.after_b3));
-      double ratio = pow(10.0, a.after_db / 20.0);
-      cn.after_level = float(ratio / (1.0 + ratio));
-      cn.detune_cents = 0.0f;  // set by the instrument (beating is not measured yet)
-    }
+    // The two-stage decay (aftersound) is stored per partial with each layer below; the instrument
+    // plays the low partials as resonators, so the older second-string model stays off.
 
     char name[8];
     auto t60 = [&](double f) { return 6.907755 / (lp.b1 + lp.b3 * f * f); };
@@ -437,6 +451,7 @@ int CmdCalibrate(int argc, char** argv) {
       ExcitationLayer el;
       el.velocity = float(layer) / max_layer;
       el.peak = float(lna.peak);
+      el.partials = PartialDecays(lna);
       el.samples.assign(residual.begin(), residual.begin() + std::min(exc_len, residual.size()));
       const size_t fade = el.samples.size() / 4;  // half-Hann fade over the last quarter
       for (size_t i = 0; i < fade; ++i) {
@@ -445,13 +460,17 @@ int CmdCalibrate(int argc, char** argv) {
       }
       float exc_peak = 0;
       for (float v : el.samples) exc_peak = std::max(exc_peak, fabsf(v));
-      printf("  %.2f %4.1f dB %5.1f dB", el.velocity, 10 * log10(ey / ee), 20 * log10(exc_peak / std::max(1e-9f, el.peak)));
+      int two_stage = 0;
+      for (auto& d : el.partials) two_stage += d.after_level > 0;
+      printf("  %.2f %4.1f dB %5.1f dB %2d/%-2d", el.velocity, 10 * log10(ey / ee), 20 * log10(exc_peak / std::max(1e-9f, el.peak)),
+             two_stage, int(el.partials.size()));
       cn.layers.push_back(std::move(el));
     }
     printf("\n");
     // Single-layer instruments keep the plain excitation field (version 1 behaviour).
     if (cn.layers.size() == 1) {
       cn.excitation = std::move(cn.layers[0].samples);
+      cn.partials = std::move(cn.layers[0].partials);
       cn.layers.clear();
     }
     cal.notes.push_back(std::move(cn));

@@ -72,6 +72,14 @@ LoopDesign RetuneLoop(const LoopDesign& design, double sample_rate, double f0_hz
 // detuned string of the same note): no dispersion search, so it is quick.
 LoopDesign DesignLoopLike(const LoopDesign& like, double sample_rate, const LoopParams& params);
 
+// Resonances of a loop (its partials 1..count below Nyquist): frequency (radians per sample), pole
+// radius per sample and group delay (samples). A partial of the loop then behaves exactly like a
+// one-pole resonator there with weight 2 / group delay. Returns how many were found.
+struct LoopResonance {
+  double w, radius, group_delay;
+};
+int FindLoopResonances(const LoopDesign& design, int count, LoopResonance* out);
+
 // Per-period gain multiplier that turns the loop's held decay into a T60 of `t60_s` (dampers).
 float ReleaseGain(double f0_hz, double t60_s);
 

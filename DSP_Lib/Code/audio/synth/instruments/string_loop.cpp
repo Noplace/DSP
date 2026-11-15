@@ -348,6 +348,35 @@ LoopDesign DesignLoop(double sr, const LoopParams& p, int max_stages) {
   return chosen.design;
 }
 
+int FindLoopResonances(const LoopDesign& d, int count, LoopResonance* out) {
+  // Loop phase (continuous, increasing): partial n sits where it reaches 2 pi n.
+  auto phase = [&](double w) { return w * LoopDelay(d, w); };
+  int found = 0;
+  double lo = 1e-9;
+  for (int n = 1; n <= count; ++n) {
+    const double target = 2 * kPi * n;
+    // Step a quarter of the local partial spacing until past the target, then bisect.
+    const double step = 0.5 * kPi / std::max(1.0, LoopDelay(d, std::max(lo, 1e-4)));
+    double hi = lo;
+    while (phase(hi) < target) {
+      lo = hi;
+      hi += step;
+      if (hi >= kPi) return found;
+    }
+    for (int i = 0; i < 60; ++i) {
+      double mid = 0.5 * (lo + hi);
+      if (phase(mid) < target) lo = mid; else hi = mid;
+    }
+    const double w = 0.5 * (lo + hi);
+    const double h = 1e-5 * std::max(w, 1e-3);
+    const double tau = (phase(w + h) - phase(w - h)) / (2 * h);
+    const double mag = d.loss_g * (1.0 + d.loss_a) / std::abs(1.0 + double(d.loss_a) * std::polar(1.0, -w));
+    out[found++] = {w, pow(std::min(1.0, mag), 1.0 / std::max(1.0, tau)), tau};
+    lo = w;
+  }
+  return found;
+}
+
 LoopDesign DesignLoopLike(const LoopDesign& like, double sr, const LoopParams& p) {
   double g, loss_a;
   FitLoss(sr, p.f0_hz, std::max(0.0, p.b1), std::max(0.0, p.b3), g, loss_a);

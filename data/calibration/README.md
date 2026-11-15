@@ -11,14 +11,18 @@ back to hand-set presets.
 
 Piano specifics: string stiffness is fitted with Abel-Smith allpass dispersion filters (partials
 within ~1-3 cents of the recordings across the keyboard), every velocity layer has its own
-excitation (crossfaded by velocity), a second detuned string carries the aftersound, and the
-piano's own stretched tuning is reproduced.
+excitation (crossfaded by velocity), and the piano's own stretched tuning is reproduced. The
+partials below 4 kHz play as resonators with each partial's own measured decay, per velocity
+layer. Each decays in two stages: a fast first stage, then the long, quiet aftersound of the
+unison strings, which rings for 30-100 s on low bass partials. A crossover hands the rest of the
+spectrum to the string loop.
 
 ## What is in a .cal file
 
 Per recorded note: measured fundamental, inharmonicity B, decay model sigma(f) = b1 + b3 f^2, and the
 excitation (the real pluck plus soundboard response) recovered by inverse-filtering the recording
-with the fitted string loop. The synth smooths the parameters across the keyboard and transposes
+with the fitted string loop. Version 3 files (the piano) also hold the decay of each of the first
+24 partials per velocity layer: T60, and for two-stage partials the aftersound's T60 and level. The synth smooths the parameters across the keyboard and transposes
 each excitation to the notes around it.
 
 ## Rebuilding

@@ -27,11 +27,21 @@ namespace audio {
 namespace synth {
 namespace instruments {
 
+// Measured decay of one partial (version 3). Low piano partials decay in two stages -- fast while
+// the unison strings move together, then a long, quiet aftersound -- and each partial does it its
+// own way, which no smooth loss filter can follow, so the instrument plays them as resonators.
+struct PartialDecay {
+  float t60_s = 0;          // decay of the partial (its first stage if it has two); 0 = not measured
+  float after_t60_s = 0;    // aftersound decay (two-stage partials)
+  float after_level = 0;    // aftersound level vs the first stage at the onset (0 = single stage)
+};
+
 // One velocity layer of a recorded note.
 struct ExcitationLayer {
   float velocity = 1.0f;          // 0..1, the playing strength this layer represents
   float peak = 0;                 // peak level of that recording
   std::vector<float> samples;     // excitation at CalibratedNote::excitation_rate
+  std::vector<PartialDecay> partials;  // version 3: partial n at index n - 1, at this velocity
 };
 
 // Parameters measured from one recorded note of a real instrument.
@@ -49,6 +59,9 @@ struct CalibratedNote {
   float after_level = 0;             // linear share of the excitation fed to the second string
   float detune_cents = 0;            // second string vs the first
   std::vector<ExcitationLayer> layers;  // sorted by velocity
+  // Version 3: per-partial decays (of `excitation`'s recording; layered notes have them per layer).
+  // They replace the second string above, which calibrations with them leave off (after_level 0).
+  std::vector<PartialDecay> partials;
 };
 
 // A calibrated string instrument: one entry per recorded note, sorted by MIDI note.
