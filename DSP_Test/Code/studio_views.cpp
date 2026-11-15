@@ -37,12 +37,22 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   const float cy = r.cy();
   float x = r.x + 18;
 
-  g.Text("DSP", Rect(x, cy - 11, 40, 22), theme::kAccent, 17, Align::kLeft, true);
-  g.Text("Studio", Rect(x + 36, cy - 11, 70, 22), theme::kText, 17, Align::kLeft, false);
-  x += 116;
+  if (r.w >= 1420) {  // the name gives way to the file buttons on narrow windows
+    g.Text("DSP", Rect(x, cy - 11, 40, 22), theme::kAccent, 17, Align::kLeft, true);
+    g.Text("Studio", Rect(x + 36, cy - 11, 70, 22), theme::kText, 17, Align::kLeft, false);
+    x += 116;
+  }
 
-  if (ui_.Button(Id(this, 1), Rect(x, cy - 15, 78, 30), "Open...")) PromptAndOpen();
-  x += 94;
+  if (ui_.Button(Id(this, 1), Rect(x, cy - 15, 62, 30), "Open")) PromptAndOpen();
+  x += 66;
+  if (ui_.Button(Id(this, 6), Rect(x, cy - 15, 58, 30), "Save")) PromptSaveSession(ui_.in.shift);
+  if (ui_.Hover(Rect(x, cy - 15, 58, 30)))
+    ui_.Tooltip(session_path_.empty() ? "Save session (Ctrl+S)" : "Save session (Ctrl+S, Shift = save as)", x + 29, cy - 15);
+  x += 62;
+  if (ui_.Button(Id(this, 7), Rect(x, cy - 15, 68, 30), "Export", false, theme::kAccent) && !exporter_.busy())
+    PromptExport();
+  if (ui_.Hover(Rect(x, cy - 15, 68, 30))) ui_.Tooltip("Export WAV, 24-bit (Ctrl+E)", x + 34, cy - 15);
+  x += 86;
 
   // Transport
   const bool playing = synth_player_->state() == dsp::audio::synth::RealtimePlayer::kStatePlaying;
@@ -94,15 +104,34 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   g.Text(line, Rect(x + 13, cy + 4, 210, 14), theme::kDim, 10.5f, Align::kLeft, false, true);
   x += 248;
 
-  // File name
-  const float right_block = 470;
-  g.Text(midi_name_[0] ? midi_name_ : "No file loaded", Rect(x, cy - 10, std::max(40.0f, r.r() - right_block - x), 20),
-         midi_name_[0] ? theme::kText : theme::kFaint, 13);
+  // File name / export progress / last message
+  const float right_block = 410;
+  const Rect info(x, cy - 18, std::max(60.0f, r.r() - right_block - x), 36);
+  if (exporter_.busy()) {
+    const bool preparing = exporter_.state() == Exporter::kPreparing;
+    char text[64];
+    if (preparing) snprintf(text, sizeof(text), "Export: preparing instruments...");
+    else snprintf(text, sizeof(text), "Exporting WAV  %.0f%%", exporter_.progress() * 100);
+    g.Text(text, Rect(info.x, info.y, info.w - 70, 18), theme::kText, 12);
+    const Rect bar(info.x, info.y + 23, info.w - 76, 6);
+    g.FillRound(bar, 3, Rgb(0x0b0c10));
+    g.FillRound(Rect(bar.x, bar.y, bar.w * exporter_.progress(), bar.h), 3, theme::kAccent);
+    if (ui_.Button(Id(this, 8), Rect(info.r() - 66, cy - 12, 62, 24), "Cancel", false, theme::kAccent, 11))
+      exporter_.Cancel();
+  } else {
+    g.Text(midi_name_[0] ? midi_name_ : "No file loaded", Rect(info.x, session_path_.empty() ? cy - 10 : cy - 17, info.w, 20),
+           midi_name_[0] ? theme::kText : theme::kFaint, 13);
+    if (!session_path_.empty()) {
+      const size_t slash = session_path_.find_last_of("\\/");
+      const std::string name = "session: " + (slash == std::string::npos ? session_path_ : session_path_.substr(slash + 1));
+      g.Text(name.c_str(), Rect(info.x, cy + 2, info.w, 16), theme::kDim, 10.5f);
+    }
+  }
 
   // Output meter (after the limiter) and limiter activity
-  float rx = r.r() - right_block + 20;
+  float rx = r.r() - right_block + 16;
   g.Text("OUT", Rect(rx, cy - 8, 30, 16), theme::kDim, 10.5f, Align::kLeft, true);
-  const Rect meter(rx + 32, cy - 5, 170, 10);
+  const Rect meter(rx + 32, cy - 5, 120, 10);
   g.FillRound(meter, 2, Rgb(0x0b0c10));
   const float t = std::clamp((output_db_ + 60.0f) / 60.0f, 0.0f, 1.0f);
   const Color mc = output_db_ > -1.5f ? theme::kRed : output_db_ > -9 ? theme::kYellow : theme::kGreen;
@@ -112,7 +141,7 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   else snprintf(text, sizeof(text), "%.1f", output_db_);
   g.Text(text, Rect(meter.r() + 6, cy - 8, 44, 16), theme::kText, 11, Align::kLeft, false, true);
   snprintf(text, sizeof(text), "LIM %.1f dB", limiter_db_);
-  g.Text(text, Rect(meter.r() + 50, cy - 8, 90, 16), limiter_db_ < -0.5f ? theme::kOrange : theme::kFaint, 11,
+  g.Text(text, Rect(meter.r() + 48, cy - 8, 72, 16), limiter_db_ < -0.5f ? theme::kOrange : theme::kFaint, 11,
          Align::kLeft, false, true);
   if (ui_.Button(Id(this, 5), Rect(r.r() - 118, cy - 14, 100, 28), "Reset mixer")) {
     midi_synth_->mixer.ResetAll();
@@ -132,7 +161,13 @@ void ClientMainWindow::DrawStatusBar(const Rect& r) {
            "PC keys  Z = %s%d   program %d %s (ch 1)      Space play/pause   Esc stop   Home rewind   "
            "\xE2\x86\x91\xE2\x86\x93 octave   \xE2\x86\x90\xE2\x86\x92 program   Shift sustain",
            kNotes[octave_base_ % 12], octave_base_ / 12 - 1, program_ + 1, ProgramName(program_));
-  g.Text(left, Rect(r.x + 14, r.y, r.w * 0.62f, r.h), theme::kDim, 11);
+  if (!message_.empty()) {  // save/export results take the place of the key help for a few seconds
+    g.Fill(Rect(r.x, r.y + 1, r.w * 0.62f, r.h - 1), WithAlpha(message_error_ ? theme::kOrange : theme::kGreen, 0.12f));
+    g.Text(message_.c_str(), Rect(r.x + 14, r.y, r.w * 0.62f - 20, r.h), message_error_ ? theme::kOrange : theme::kGreen,
+           11.5f, Align::kLeft, true);
+  } else {
+    g.Text(left, Rect(r.x + 14, r.y, r.w * 0.62f, r.h), theme::kDim, 11);
+  }
 
   int n = 0;
   if (synth_player_->output().running()) {
@@ -413,7 +448,17 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
     g.FillRound(Rect(area.x + 74, area.y + 7, 40, 15), 3, theme::kYellow);
     g.Text("SOLO", Rect(area.x + 74, area.y + 7, 40, 15), Rgb(0x0d0f13), 9.5f, Align::kCenter, true);
   }
-  g.Text("click a strip to edit its processing chain", Rect(area.x + 124, area.y, 400, 28), theme::kFaint, 11);
+  g.Text("click a strip to edit its processing chain", Rect(area.x + 124, area.y, 300, 28), theme::kFaint, 11);
+
+  // Follow the file's reverb/chorus send levels (GM CC91/CC93) on top of the send knobs.
+  const bool follow = mixer.follow_midi_sends();
+  const Rect follow_r(area.r() - 196, area.y + 4, 186, 20);
+  if (ui_.Button(Id(this, 41), follow_r, follow ? "File reverb/chorus: on" : "File reverb/chorus: off", follow,
+                 theme::kAccent, 10.5f))
+    mixer.set_follow_midi_sends(!follow);
+  if (ui_.Hover(follow_r))
+    ui_.Tooltip("Add the reverb and chorus levels the MIDI file asks for (CC91/CC93) to each strip's sends",
+                follow_r.cx(), follow_r.y);
 
   const float y0 = area.y + 28, h = area.h - 28 - 8;
   const float master_w = 96;
@@ -440,7 +485,9 @@ void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
   snprintf(name, sizeof(name), "%d %s", ch + 1, named ? strip_names_[ch].c_str() : "");
   g.Text(name, chip.Inset(4, 0), selected ? Rgb(0x0d0f13) : theme::kText, 11, Align::kLeft, true);
   y += 22;
-  g.Text(ProgramName(midi_synth_->channel_program(ch)), Rect(r.x + 3, y, r.w - 6, 13), theme::kFaint, 9.5f, Align::kCenter);
+  const bool fixed = midi_synth_->channel_override(ch) >= 0;  // instrument picked in the studio
+  g.Text(ProgramName(midi_synth_->channel_program(ch)), Rect(r.x + 3, y, r.w - 6, 13), fixed ? color : theme::kFaint,
+         9.5f, Align::kCenter, fixed);
   y += 16;
 
   // Section indicators: input filters/drive, EQ, dynamics, sends
@@ -448,7 +495,10 @@ void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
                    fabsf(p.get(kStripTrim)) > 0.05f || p.get(kStripPhase) >= 0.5f;
   const bool eq = p.get(kStripEq + kEqOn) >= 0.5f;
   const bool dyn = p.get(kStripComp + kCompOn) >= 0.5f;
-  const bool fx = p.get(kStripSendReverb) > 0 || p.get(kStripSendDelay) > 0 || p.get(kStripSendChorus) > 0;
+  auto& mixer = midi_synth_->mixer;
+  const bool file_fx = named && mixer.follow_midi_sends() &&
+                       (mixer.midi_send(ch, Mixer::kBusReverb) > 0 || mixer.midi_send(ch, Mixer::kBusChorus) > 0);
+  const bool fx = p.get(kStripSendReverb) > 0 || p.get(kStripSendDelay) > 0 || p.get(kStripSendChorus) > 0 || file_fx;
   // F = input filters/drive, E = EQ, C = compressor, S = FX sends
   const char* labels[4] = {"F", "E", "C", "S"};
   const bool lit[4] = {pre, eq, dyn, fx};
@@ -558,19 +608,47 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
   // Header
   const Rect head(area.x, area.y, area.w, 60);
   g.Circle(head.x + 26, head.cy(), 9, color, true);
-  char title[128], sub[160];
+  char title[128];
+  const float buttons_w = 168;
   if (sel >= 0) {
     snprintf(title, sizeof(title), "Channel %d%s%s", sel + 1, strip_names_[sel].empty() ? "" : "  \xC2\xB7  ",
              strip_names_[sel].c_str());
-    snprintf(sub, sizeof(sub), "%s   \xC2\xB7   input \xE2\x86\x92 filters \xE2\x86\x92 EQ \xE2\x86\x92 dynamics \xE2\x86\x92 fader",
-             ProgramName(midi_synth_->channel_program(sel)));
+    // Instrument: click to pick one for this channel (or go back to the file's choice).
+    const bool fixed = midi_synth_->channel_override(sel) >= 0;
+    char inst[96];
+    snprintf(inst, sizeof(inst), "%s%s  \xE2\x96\xBE", ProgramName(midi_synth_->channel_program(sel)),
+             fixed ? "  (fixed)" : "");
+    const Rect inst_r(head.x + 42, head.y + 31, std::min(head.w - 58, g.TextWidth(inst, 11, fixed) + 20), 20);
+    if (ui_.Button(Id(this, 51), inst_r, "", fixed, color)) {
+      picker_open_ = true;
+      picker_family_ = std::min(15, std::max(0, midi_synth_->channel_program(sel) / 8));
+      picker_anchor_ = Rect(area.x + 14, head.b() + 2, area.w - 28, 0);
+    }
+    g.Text(inst, inst_r.Inset(8, 0), fixed ? Rgb(0x0d0f13) : theme::kText, 11, Align::kLeft, fixed);
+    if (ui_.Hover(inst_r)) ui_.Tooltip("Choose the instrument for this channel", inst_r.cx(), inst_r.y);
   } else {
     snprintf(title, sizeof(title), "Master bus");
-    snprintf(sub, sizeof(sub), "FX returns \xE2\x86\x92 EQ \xE2\x86\x92 bus compressor \xE2\x86\x92 width \xE2\x86\x92 output \xE2\x86\x92 limiter");
+    g.Text("FX returns \xE2\x86\x92 EQ \xE2\x86\x92 bus compressor \xE2\x86\x92 width \xE2\x86\x92 output \xE2\x86\x92 limiter",
+           Rect(head.x + 46, head.y + 32, head.w - 60, 16), theme::kDim, 10.5f);
   }
-  g.Text(title, Rect(head.x + 46, head.y + 10, head.w - 150, 22), theme::kText, 15, Align::kLeft, true);
-  g.Text(sub, Rect(head.x + 46, head.y + 32, head.w - 60, 16), theme::kDim, 10.5f);
-  if (ui_.Button(Id(this, 50), Rect(head.r() - 84, head.y + 12, 70, 24), "Reset", false, theme::kAccent, 11)) {
+  g.Text(title, Rect(head.x + 46, head.y + 8, head.w - 56 - buttons_w, 22), theme::kText, 15, Align::kLeft, true);
+  float bx = head.r() - 14 - buttons_w;
+  const char* what = sel >= 0 ? "channel chain" : "master bus";
+  if (ui_.Button(Id(this, 52), Rect(bx, head.y + 8, 52, 22), "Load", false, theme::kAccent, 11)) PromptLoadChain();
+  if (ui_.Hover(Rect(bx, head.y + 8, 52, 22))) {
+    char tip[64];
+    snprintf(tip, sizeof(tip), "Load a %s preset", what);
+    ui_.Tooltip(tip, bx + 26, head.y + 8);
+  }
+  bx += 56;
+  if (ui_.Button(Id(this, 53), Rect(bx, head.y + 8, 52, 22), "Save", false, theme::kAccent, 11)) PromptSaveChain();
+  if (ui_.Hover(Rect(bx, head.y + 8, 52, 22))) {
+    char tip[64];
+    snprintf(tip, sizeof(tip), "Save this %s as a preset", what);
+    ui_.Tooltip(tip, bx + 26, head.y + 8);
+  }
+  bx += 56;
+  if (ui_.Button(Id(this, 50), Rect(bx, head.y + 8, 56, 22), "Reset", false, theme::kAccent, 11)) {
     if (sel >= 0) midi_synth_->mixer.ResetStrip(sel);
     else midi_synth_->mixer.ResetMaster();
   }
@@ -580,6 +658,9 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
   const Rect body(area.x, head.b(), area.w, area.h - head.h);
   inspector_scroll_ = std::clamp(inspector_scroll_, 0.0f, std::max(0.0f, inspector_content_h_ - body.h));
   ui_.Clip(body);
+  // While the wheel is scrolling the panel, knobs passing under the cursor must not catch it.
+  const double now_s = GetTickCount64() / 1000.0;
+  ui_.knob_wheel = now_s > inspector_wheel_until_;
   // The response graph takes whatever height the cards leave, so the panel fits without scrolling.
   graph_h_ = std::clamp(body.h - 600.0f, 120.0f, 240.0f);
   const float top = body.y + 12 - inspector_scroll_;
@@ -588,7 +669,11 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
   inspector_content_h_ = end - top + 24;
   const float wheel = ui_.TakeWheel(body);  // whatever the knobs did not take scrolls the panel
   ui_.Unclip();
-  if (wheel != 0) inspector_scroll_ -= wheel * 60;
+  ui_.knob_wheel = true;
+  if (wheel != 0 && inspector_content_h_ > body.h) {
+    inspector_scroll_ -= wheel * 60;
+    inspector_wheel_until_ = now_s + 0.6;
+  }
   if (inspector_content_h_ > body.h) {
     const float th = body.h * body.h / inspector_content_h_;
     const float ty = body.y + (body.h - th) * inspector_scroll_ / (inspector_content_h_ - body.h);
@@ -656,7 +741,12 @@ float ClientMainWindow::DrawChannelInspector(float x, float y, float w, int ch) 
   y = by + 72 + 10;
 
   // OUTPUT: fader, balance, sends
-  by = DrawCard(x, y, w, 72, "OUTPUT  \xC2\xB7  POST  \xC2\xB7  sends", nullptr, color);
+  char out_title[160] = "OUTPUT  \xC2\xB7  POST  \xC2\xB7  sends";
+  auto& mixer = midi_synth_->mixer;
+  if (mixer.follow_midi_sends())
+    snprintf(out_title, sizeof(out_title), "OUTPUT  \xC2\xB7  POST  \xC2\xB7  sends   (+ file: reverb %.0f%%, chorus %.0f%%)",
+             mixer.midi_send(ch, Mixer::kBusReverb) * 100, mixer.midi_send(ch, Mixer::kBusChorus) * 100);
+  by = DrawCard(x, y, w, 72, out_title, nullptr, color);
   cw = w / 7.0f;
   knob(x, by, cw, kStripVolume);
   knob(x + cw, by, cw, kStripPan);
@@ -729,6 +819,74 @@ float ClientMainWindow::DrawMasterInspector(float x, float y, float w) {
   DrawGainReduction(Rect(x + w - 38, by, 26, 70), master_meter_.gr_db);
   y = by + 72;
   return y;
+}
+
+// Instrument picker for the selected channel: GM families on the left, the family's eight
+// programs on the right, plus "From file" (drop the override) and "Drum kit".
+void ClientMainWindow::DrawInstrumentPicker(const Rect& a) {
+  Gfx& g = gfx_;
+  const int ch = selected_strip_;
+  if (ch < 0) {
+    picker_open_ = false;
+    return;
+  }
+  static const char* kFamilies[16] = {"Piano", "Chromatic perc.", "Organ", "Guitar", "Bass", "Strings",
+                                      "Ensemble", "Brass", "Reed", "Pipe", "Synth lead", "Synth pad",
+                                      "Synth effects", "Ethnic", "Percussive", "Sound effects"};
+  const float row = 21, head = 40;
+  const Rect box(a.x, a.y, a.w, head + 16 * row + 10);
+  const Color color = theme::Channel(ch);
+  const int current = midi_synth_->channel_override(ch);
+  const int sounding = midi_synth_->channel_program(ch);
+
+  // Click outside closes.
+  if (ui_.in.pressed && !box.Contains(ui_.in.mx, ui_.in.my)) {
+    ui_.in.pressed = false;
+    picker_open_ = false;
+    return;
+  }
+  g.FillRound(Rect(box.x + 3, box.y + 5, box.w, box.h), 8, Rgb(0x000000, 0.45f));
+  g.FillRound(box, 8, theme::kPanel2);
+  g.StrokeRound(box, 8, theme::kLine);
+  char title[64];
+  snprintf(title, sizeof(title), "Instrument for channel %d", ch + 1);
+  g.Text(title, Rect(box.x + 14, box.y + 8, box.w - 200, 24), theme::kText, 13, Align::kLeft, true);
+  if (ui_.Button(Id(this, 60), Rect(box.r() - 186, box.y + 9, 88, 22), "From file", current < 0, color, 11)) {
+    midi_synth_->set_channel_override(ch, -1);
+    picker_open_ = false;
+  }
+  if (ui_.Button(Id(this, 61), Rect(box.r() - 94, box.y + 9, 82, 22), "Drum kit", current == 128, color, 11)) {
+    midi_synth_->set_channel_override(ch, 128);
+    picker_open_ = false;
+  }
+
+  const float fam_w = 150;
+  for (int f = 0; f < 16; ++f) {
+    const Rect fr(box.x + 8, box.y + head + f * row, fam_w, row - 2);
+    const bool on = f == picker_family_;
+    const bool has_current = sounding < 128 && sounding / 8 == f;
+    if (ui_.Hover(fr)) picker_family_ = f;  // hovering a family shows its programs
+    ui_.Clicked(Id(this, 100 + f), fr);
+    g.FillRound(fr, 4, on ? theme::kPanel3 : Rgb(0, 0));
+    g.Text(kFamilies[f], fr.Inset(10, 0), has_current ? color : on ? theme::kText : theme::kDim, 11.5f, Align::kLeft,
+           has_current);
+  }
+  const float px = box.x + fam_w + 18, pw = box.r() - 10 - px;
+  g.Line(px - 6, box.y + head, px - 6, box.b() - 10, theme::kLine);
+  for (int i = 0; i < 8; ++i) {
+    const int program = picker_family_ * 8 + i;
+    const Rect pr(px, box.y + head + i * row * 2, pw, row * 2 - 4);
+    char label[64];
+    snprintf(label, sizeof(label), "%3d   %s", program + 1, ProgramName(program));
+    const bool on = program == sounding;
+    if (ui_.Clicked(Id(this, 200 + program), pr)) {
+      midi_synth_->set_channel_override(ch, program);
+      picker_open_ = false;
+    }
+    const bool over = ui_.Hover(pr);
+    g.FillRound(pr, 5, on ? WithAlpha(color, 0.85f) : over ? theme::kPanel3 : theme::kPanel);
+    g.Text(label, pr.Inset(12, 0), on ? Rgb(0x0d0f13) : theme::kText, 12, Align::kLeft, on);
+  }
 }
 
 // Frequency response of the selected strip (filters + EQ) or the master EQ, over a live
@@ -828,7 +986,7 @@ void ClientMainWindow::DrawResponseGraph(const Rect& r, int strip) {
       const float gain = -(ui_.in.my - plot.cy()) / (plot.h * 0.5f) * kRange;
       slot(gid)->store(std::clamp(roundf(gain * 10) / 10, gi.min, gi.max));
     }
-    if (ui_.Hover(hit) && ui_.active == 0) {
+    if (ui_.knob_wheel && ui_.Hover(hit) && ui_.active == 0) {
       const float wheel = ui_.TakeWheel(hit);
       if (wheel != 0) {
         const auto& qi = info(qid);

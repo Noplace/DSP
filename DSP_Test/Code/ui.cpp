@@ -137,7 +137,7 @@ bool Ui::DragValue(WidgetId id, const Rect& r, const ParamInfo& info, std::atomi
     active = 0;
     in.released = false;
   }
-  const float wheel = TakeWheel(r);
+  const float wheel = knob_wheel ? TakeWheel(r) : 0.0f;
   if (wheel != 0) {
     const float t = ParamToNormalized(info, value) + wheel * (in.shift ? 0.005f : 0.025f);
     v->store(ParamFromNormalized(info, t), std::memory_order_relaxed);

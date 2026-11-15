@@ -83,6 +83,11 @@ enum MasterParam {
 
 const ParamInfo& StripParamInfo(int id);
 const ParamInfo& MasterParamInfo(int id);
+// Stable names for session/preset files ("eq.lomid.gain", "reverb.size", ...); -1 if unknown.
+const char* StripParamKey(int id);
+const char* MasterParamKey(int id);
+int FindStripParam(const char* key);
+int FindMasterParam(const char* key);
 
 template <int N>
 class ParamBank {
@@ -127,6 +132,16 @@ class Mixer {
   void ResetAll();
   bool AnySolo() const;
 
+  // Send levels a MIDI file asks for (GM CC91 reverb, CC93 chorus), set by the synth. When
+  // following them, a strip sends its own send knob plus the file's level.
+  enum Bus { kBusReverb = 0, kBusDelay = 1, kBusChorus = 2 };
+  void set_midi_send(int strip, int bus, float level) { midi_send_[strip][bus].store(level, std::memory_order_relaxed); }
+  float midi_send(int strip, int bus) const { return midi_send_[strip][bus].load(std::memory_order_relaxed); }
+  void set_follow_midi_sends(bool on) { follow_midi_sends_.store(on, std::memory_order_relaxed); }
+  bool follow_midi_sends() const { return follow_midi_sends_.load(std::memory_order_relaxed); }
+  // Send level actually used (knob + file level when following), 0..
+  float EffectiveSend(int strip, int bus) const;
+
   // Meters (UI thread): peak since the last call, and the largest gain reduction (as a gain).
   void TakeStripPeak(int i, float& l, float& r) {
     l = strips_meter_[i].peak[0].exchange(0.0f);
@@ -168,6 +183,8 @@ class Mixer {
   StripState* strips_ = nullptr;
   MasterState* master_ = nullptr;
   std::vector<float> bus_[3];  // reverb, delay, chorus send buses (interleaved stereo)
+  std::atomic<float> midi_send_[kStrips][3] = {};
+  std::atomic<bool> follow_midi_sends_{false};
   std::atomic<float> scope_[kScopeSize];
   std::atomic<uint32_t> scope_pos_;
   std::atomic<int> analyzer_source_;

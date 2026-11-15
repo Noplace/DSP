@@ -127,7 +127,15 @@ class MidiSynth : public Synth {
   bool track_muted(int track) const { return track < 64 && (track_mute_mask_.load() >> track) & 1; }
   bool track_solo(int track) const { return track < 64 && (track_solo_mask_.load() >> track) & 1; }
   // GM program currently selected on a channel (any thread; approximate while it changes).
+  // 128 = drum kit.
   int channel_program(int channel) const { return channel_program_[channel & 15].load(std::memory_order_relaxed); }
+  // Play a channel with a fixed instrument (0-127 GM program, 128 = drum kit) whatever the file
+  // selects; -1 = follow the file. Any thread: applied by the audio thread on its next block.
+  void set_channel_override(int channel, int program) {
+    channel_override_[channel & 15].store(program, std::memory_order_relaxed);
+    overrides_dirty_.store(true, std::memory_order_release);
+  }
+  int channel_override(int channel) const { return channel_override_[channel & 15].load(std::memory_order_relaxed); }
 
   // Channel strips, FX buses and master bus between the channels and the output.
   effects::Mixer mixer;
@@ -164,6 +172,8 @@ class MidiSynth : public Synth {
   void BuildInstrumentBank();
   void BuildSongInfo(const midi::MidiLoader& file);
   void ResetChannelsToDefaults();
+  void ApplyChannelProgram(int channel);  // file program + overrides -> channel instrument
+  void ApplyOverridesIfChanged();
   static void SetTrackBit(std::atomic<uint64_t>& mask, int track, bool on) {
     if (track < 0 || track >= 64) return;
     if (on) mask.fetch_or(uint64_t(1) << track); else mask.fetch_and(~(uint64_t(1) << track));
@@ -178,6 +188,9 @@ class MidiSynth : public Synth {
   SongInfo song_;
   std::atomic<uint64_t> track_mute_mask_{0}, track_solo_mask_{0};
   std::atomic<int> channel_program_[16] = {};
+  int file_program_[16] = {};  // last program change from the file/live input (128 = drums)
+  std::atomic<int> channel_override_[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+  std::atomic<bool> overrides_dirty_{false};
   void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void MixChannelsStereo(uint32_t samples_to_generate);

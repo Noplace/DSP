@@ -183,6 +183,8 @@ void ClientMainWindow::Start() {
   if (!synth_player_->Initialize(midi_synth_)) {
     MessageBoxA(handle_, synth_player_->last_error(), "Could not open audio device", MB_ICONERROR);
   }
+  // In the studio, files get the reverb/chorus they ask for (CC91/CC93) unless switched off.
+  midi_synth_->mixer.set_follow_midi_sends(true);
   RescanMidiInputs();
 
   SetInitialSize();
@@ -192,61 +194,7 @@ void ClientMainWindow::Start() {
 
   // MIDI file from the command line; otherwise the track view offers an Open button.
   if (__argc > 1)
-    OpenMidi(__argv[1]);
-}
-
-bool ClientMainWindow::PromptForMidiFile(char* path, size_t path_size) {
-  OPENFILENAMEA ofn = {};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = handle_;
-  ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
-  ofn.lpstrFile = path;
-  ofn.nMaxFile = (DWORD)path_size;
-  ofn.lpstrTitle = "Open MIDI file";
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-  return GetOpenFileNameA(&ofn) != FALSE;
-}
-
-void ClientMainWindow::PromptAndOpen() {
-  ReleaseHeldNotes();
-  ui_.in.down = false;  // the dialog swallows the button-up
-  ui_.active = 0;
-  char path[MAX_PATH] = {};
-  if (PromptForMidiFile(path, sizeof(path)))
-    OpenMidi(path);
-}
-
-void ClientMainWindow::OpenMidi(const char* path) {
-  if (synth_player_ == nullptr || !synth_player_->output().running())
-    return;
-  // Loading replaces the synth's track data, so keep the audio thread out while it happens.
-  synth_player_->WithSynthLocked([&] { midi_synth_->LoadMidiFromFile(path); });
-  const char* name = path;
-  for (const char* c = path; *c; ++c)
-    if (*c == '\\' || *c == '/') name = c + 1;
-  strncpy_s(midi_name_, name, _TRUNCATE);
-
-  // Track view rows and strip names.
-  const auto& song = midi_synth_->song();
-  visible_tracks_.clear();
-  for (auto& n : strip_names_) n.clear();
-  for (int t = 0; t < int(song.tracks.size()); ++t) {
-    const auto& track = song.tracks[t];
-    if (track.notes.empty()) continue;
-    visible_tracks_.push_back(t);
-    for (int ch = 0; ch < 16; ++ch) {
-      if (!(track.channel_mask & (1 << ch)) || !strip_names_[ch].empty()) continue;
-      bool has_notes = false;
-      for (auto& n : track.notes) if (n.channel == ch) { has_notes = true; break; }
-      if (has_notes) strip_names_[ch] = track.name.empty() ? std::string("Track ") + std::to_string(t + 1) : track.name;
-    }
-  }
-  track_scroll_y_ = 0;
-  ZoomToFit();
-  char title[MAX_PATH + 64];
-  sprintf_s(title, "%s - %s", title_, midi_name_);
-  SetWindowTextA(handle_, title);
-  synth_player_->Play();
+    OpenAny(__argv[1]);
 }
 
 void ClientMainWindow::RescanMidiInputs() {
@@ -302,14 +250,21 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
   const bool repeat = (flags & (1 << 30)) != 0;
   const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
+  const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
   if (ctrl) {
-    if (key == 'O' && !repeat) PromptAndOpen();
+    if (!repeat) {
+      if (key == 'O') PromptAndOpen();
+      else if (key == 'S') PromptSaveSession(shift);  // Ctrl+Shift+S = save as
+      else if (key == 'E') PromptExport();
+    }
   } else if (key == VK_SHIFT) {
     if (!repeat) SendLive(0xB0, 64, 127);  // sustain pedal down
   } else if (key == VK_SPACE) {
     if (!repeat) synth_player_->TogglePause();
   } else if (key == VK_ESCAPE) {
-    synth_player_->Stop();
+    if (picker_open_) picker_open_ = false;
+    else synth_player_->Stop();
   } else if (key == VK_HOME) {
     Seek(0);
   } else if (key == VK_F5) {
@@ -468,6 +423,9 @@ void ClientMainWindow::OnTimer() {
                 (synth_player_ && synth_player_->state() == dsp::audio::synth::RealtimePlayer::kStatePlaying);
   for (auto& m : strip_meter_)
     active = active || m.hold[0] > -89.0f || m.hold[1] > -89.0f || m.gr_db < -0.05f;
+  PollExport();
+  active = active || exporter_.busy() || (!message_.empty() && now < message_until_ + 0.1);
+  if (!message_.empty() && now > message_until_) message_.clear();
   if (active) last_active_ = now;
   // keep drawing a little after activity so the analyser and peak holds settle
   if (now - last_active_ < 2.0 || now - last_paint_ > 1.0)
@@ -490,10 +448,18 @@ void ClientMainWindow::Render() {
   const float mixer_h = std::clamp(body_h * 0.42f, 290.0f, 380.0f);
 
   if (synth_player_ != nullptr && midi_synth_ != nullptr) {
+    ui_.SetModal(picker_open_);  // the panels below are inert while the popup is up
     DrawTopBar(Rect(0, 0, W, top_h));
     DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h));
     DrawMixer(Rect(0, body_y + body_h - mixer_h, left_w, mixer_h));
     DrawInspector(Rect(left_w, body_y, ins_w, body_h));
+    if (picker_open_) {
+      ui_.SetModal(true);
+      ui_.BeginModal();
+      DrawInstrumentPicker(picker_anchor_);
+      ui_.EndModal();
+    }
+    ui_.SetModal(false);
     DrawStatusBar(Rect(0, H - status_h, W, status_h));
   }
   ui_.EndFrame();

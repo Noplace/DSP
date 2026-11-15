@@ -45,12 +45,17 @@ class Ui {
   Input in;
   WidgetId active = 0;  // widget being dragged / pressed
   WidgetId hot = 0;     // widget under the mouse this frame
+  bool knob_wheel = true;  // knobs/faders react to the wheel (off while a panel is being scrolled)
 
   void BeginFrame();
   void EndFrame();  // draws the tooltip, clears per-frame input
   bool Hover(const Rect& r) const {
-    return r.Contains(in.mx, in.my) && (!clipped_ || clip_.Contains(in.mx, in.my));
+    return r.Contains(in.mx, in.my) && (!clipped_ || clip_.Contains(in.mx, in.my)) && (!modal_ || in_modal_);
   }
+  // While a popup is open, only widgets drawn between BeginModal/EndModal take input.
+  void SetModal(bool on) { modal_ = on; }
+  void BeginModal() { in_modal_ = true; }
+  void EndModal() { in_modal_ = false; }
   // Clip drawing and hit-testing (for scrolled panels). Not nestable.
   void Clip(const Rect& r) { clip_ = r; clipped_ = true; g.PushClip(r); }
   void Unclip() { if (clipped_) { clipped_ = false; g.PopClip(); } }
@@ -82,6 +87,7 @@ class Ui {
   float drag_y0_ = 0, drag_t0_ = 0;
   Rect clip_;
   bool clipped_ = false;
+  bool modal_ = false, in_modal_ = false;
   std::string tip_;
   float tip_x_ = 0, tip_y_ = 0;
 };

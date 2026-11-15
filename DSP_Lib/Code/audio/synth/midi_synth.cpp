@@ -295,8 +295,11 @@ void MidiSynth::Initialize() {
   delay_unit.set_delay_ms(400.0f);
 
   mixer.Initialize(sample_rate_, uint32_t(buffers.main_size / 2));
-  for (int i = 0; i < kChannelCount; ++i)
-    channel_program_[i] = i == 9 ? 128 : 0;  // 128 = drum kit
+  for (int i = 0; i < kChannelCount; ++i) {
+    file_program_[i] = channel_program_[i] = i == 9 ? 128 : 0;  // 128 = drum kit
+    mixer.set_midi_send(i, effects::Mixer::kBusReverb, 40 / 127.0f);  // GM default CC91
+    mixer.set_midi_send(i, effects::Mixer::kBusChorus, 0.0f);
+  }
 
   tracks = nullptr;
 
@@ -353,7 +356,10 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
   if (mode_ == kModeTest)
     return;
   player_->Stop();
-  
+  // Every file starts from GM defaults, not from where the previous file left the channels.
+  AllNotesOff();
+  ResetChannelsToDefaults();
+
   midi::MidiLoader midifile;
   midifile.Load(data,data_size);
   
@@ -588,17 +594,33 @@ void MidiSynth::BuildSongInfo(const midi::MidiLoader& file) {
   song_.loaded = true;
 }
 
+// Instrument for a channel: its per-channel override if set, else the drum kit on channel 10,
+// else the global program override, else the program the file/live input selected.
+void MidiSynth::ApplyChannelProgram(int i) {
+  int program = channel_override_[i].load(std::memory_order_relaxed);
+  if (program < 0) {
+    if (i == 9) program = 128;
+    else if (program_override_ >= 0) program = program_override_ & 127;
+    else program = file_program_[i] & 127;
+  }
+  channels[i]->set_instrument(program >= 128 ? drum_kit_ : instr[program & 127]);
+  channel_program_[i] = program >= 128 ? 128 : program;
+}
+
+void MidiSynth::ApplyOverridesIfChanged() {
+  if (!initialized_ || !overrides_dirty_.exchange(false, std::memory_order_acquire))
+    return;
+  for (int i = 0; i < kChannelCount; ++i)
+    ApplyChannelProgram(i);
+}
+
 void MidiSynth::ResetChannelsToDefaults() {
   for (int i = 0; i < kChannelCount; ++i) {
     auto c = channels[i];
-    if (i == 9) {
-      c->set_instrument(drum_kit_);
-      channel_program_[i] = 128;
-    } else {
-      const int program = program_override_ >= 0 ? program_override_ : 0;
-      c->set_instrument(instr[program & 127]);
-      channel_program_[i] = program;
-    }
+    file_program_[i] = i == 9 ? 128 : 0;
+    ApplyChannelProgram(i);
+    mixer.set_midi_send(i, effects::Mixer::kBusReverb, 40 / 127.0f);  // GM defaults: CC91 = 40,
+    mixer.set_midi_send(i, effects::Mixer::kBusChorus, 0.0f);         // CC93 = 0
     c->ResetControllers();
     c->set_amplification(100 / 127.0f);
     c->set_panning(0.5f);
@@ -643,6 +665,7 @@ void MidiSynth::Seek(double target_ms) {
 
 
 void MidiSynth::RenderIdleStereo(uint32_t samples_count, real_t* data_out) {
+  ApplyOverridesIfChanged();
   uint32_t data_offset = 0;
   GenerateIntoBufferStereo(samples_count, data_out, data_offset);
 }
@@ -705,6 +728,7 @@ void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) 
 }
 
 void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
+  ApplyOverridesIfChanged();
 	uint32_t data_offset = 0;
   if (mode_ == kModeTest) {
     samples_to_next_event = samples_count;
@@ -893,25 +917,17 @@ void MidiSynth::MidiEventNoteOff(midi::Event* event) {
 }
 
 void MidiSynth::MidiEventProgramChange(midi::Event* event) {
-  auto channel = channels[event->channel];
-  if (event->channel == 9) {
-    channel->set_instrument(drum_kit_);
-  } else {
-    int program = program_override_ >= 0 ? program_override_ : event->data.program.number;
-    channel->set_instrument(instr[program & 127]);
-    channel_program_[event->channel] = program & 127;
-  }
-  channel->set_silence(false);
+  const int ch = event->channel & 15;
+  file_program_[ch] = ch == 9 ? 128 : event->data.program.number & 127;
+  ApplyChannelProgram(ch);
+  channels[ch]->set_silence(false);
 }
 
 void MidiSynth::set_program_override(int program) {
   program_override_ = program;
   if (initialized_ && program >= 0)
     for (int i = 0; i < kChannelCount; ++i)
-      if (i != 9) {
-        channels[i]->set_instrument(instr[program & 127]);
-        channel_program_[i] = program & 127;
-      }
+      ApplyChannelProgram(i);
 }
 
 void MidiSynth::MidiEventController(midi::Event* event) {
@@ -940,6 +956,12 @@ void MidiSynth::MidiEventController(midi::Event* event) {
       break;
     case 0x0B:  // expression
       channel->set_expression(value / 127.0f);
+      break;
+    case 0x5B:  // effects 1 depth: reverb send (used when the mixer follows the file's sends)
+      mixer.set_midi_send(event->channel, effects::Mixer::kBusReverb, value / 127.0f);
+      break;
+    case 0x5D:  // effects 3 depth: chorus send
+      mixer.set_midi_send(event->channel, effects::Mixer::kBusChorus, value / 127.0f);
       break;
     case 0x40:  // sustain (damper) pedal
       channel->set_sustain(value >= 64);

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <commdlg.h>
+#include <shobjidl.h>
 #include <algorithm>
 #include <atomic>
 #include <string>
@@ -12,4 +13,6 @@
 #include "..\..\DSP_Lib\Code\dsp.h"
 #include "gfx.h"
 #include "ui.h"
+#include "session.h"
+#include "exporter.h"
 #include "client_main_window.h"

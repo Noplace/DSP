@@ -3,6 +3,7 @@
 #include <string.h>
 #include <xmmintrin.h>
 #include <algorithm>
+#include <string>
 #include <vector>
 #include "mixer.h"
 #include "biquad.h"
@@ -112,6 +113,54 @@ inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 
 const ParamInfo& StripParamInfo(int id) { return strip_table().info[id]; }
 const ParamInfo& MasterParamInfo(int id) { return master_table().info[id]; }
+
+namespace {
+const char* const kEqKeys[kEqParamCount] = {
+  "on", "low.freq", "low.gain", "low.q", "lomid.freq", "lomid.gain", "lomid.q",
+  "himid.freq", "himid.gain", "himid.q", "high.freq", "high.gain", "high.q"};
+const char* const kCompKeys[kCompParamCount] = {"on", "threshold", "ratio", "attack", "release", "knee", "makeup"};
+
+struct KeyTables {
+  std::string strip[kStripParamCount], master[kMasterParamCount];
+  KeyTables() {
+    const char* s[kStripParamCount] = {};
+    s[kStripTrim] = "trim"; s[kStripPhase] = "phase";
+    s[kStripHpfOn] = "hpf.on"; s[kStripHpfFreq] = "hpf.freq"; s[kStripHpfSteep] = "hpf.steep";
+    s[kStripLpfOn] = "lpf.on"; s[kStripLpfFreq] = "lpf.freq"; s[kStripLpfQ] = "lpf.q";
+    s[kStripDriveOn] = "drive.on"; s[kStripDrive] = "drive.amount"; s[kStripDriveMix] = "drive.mix";
+    s[kStripDynFirst] = "comp.before_eq";
+    s[kStripVolume] = "volume"; s[kStripPan] = "pan"; s[kStripMute] = "mute"; s[kStripSolo] = "solo";
+    s[kStripSendPre] = "send.prefader"; s[kStripSendReverb] = "send.reverb";
+    s[kStripSendDelay] = "send.delay"; s[kStripSendChorus] = "send.chorus";
+    for (int i = 0; i < kStripParamCount; ++i) if (s[i]) strip[i] = s[i];
+    for (int i = 0; i < kEqParamCount; ++i) strip[kStripEq + i] = std::string("eq.") + kEqKeys[i];
+    for (int i = 0; i < kCompParamCount; ++i) strip[kStripComp + i] = std::string("comp.") + kCompKeys[i];
+
+    const char* m[kMasterParamCount] = {};
+    m[kRevSize] = "reverb.size"; m[kRevDamp] = "reverb.damping"; m[kRevWidth] = "reverb.width";
+    m[kRevPreDelay] = "reverb.predelay"; m[kRevReturn] = "reverb.return";
+    m[kDlyTime] = "delay.time"; m[kDlyFeedback] = "delay.feedback"; m[kDlyDamp] = "delay.tone";
+    m[kDlyPingPong] = "delay.pingpong"; m[kDlyReturn] = "delay.return";
+    m[kChoRate] = "chorus.rate"; m[kChoDepth] = "chorus.depth"; m[kChoReturn] = "chorus.return";
+    m[kMasterWidth] = "width"; m[kMasterGain] = "output";
+    for (int i = 0; i < kMasterParamCount; ++i) if (m[i]) master[i] = m[i];
+    for (int i = 0; i < kEqParamCount; ++i) master[kMasterEq + i] = std::string("eq.") + kEqKeys[i];
+    for (int i = 0; i < kCompParamCount; ++i) master[kMasterComp + i] = std::string("comp.") + kCompKeys[i];
+  }
+};
+const KeyTables& key_tables() { static KeyTables t; return t; }
+}  // namespace
+
+const char* StripParamKey(int id) { return key_tables().strip[id].c_str(); }
+const char* MasterParamKey(int id) { return key_tables().master[id].c_str(); }
+int FindStripParam(const char* key) {
+  for (int i = 0; i < kStripParamCount; ++i) if (key_tables().strip[i] == key) return i;
+  return -1;
+}
+int FindMasterParam(const char* key) {
+  for (int i = 0; i < kMasterParamCount; ++i) if (key_tables().master[i] == key) return i;
+  return -1;
+}
 
 float ParamToNormalized(const ParamInfo& info, float v) {
   v = std::clamp(v, info.min, info.max);
@@ -504,6 +553,13 @@ void Mixer::ResetAll() {
   ResetMaster();
 }
 
+float Mixer::EffectiveSend(int strip, int bus) const {
+  static const int kSendParam[3] = {kStripSendReverb, kStripSendDelay, kStripSendChorus};
+  float s = strip_params_[strip].get(kSendParam[bus]);
+  if (follow_midi_sends()) s += midi_send(strip, bus);
+  return s;
+}
+
 bool Mixer::AnySolo() const {
   for (int i = 0; i < kStrips; ++i)
     if (strip_params_[i].get(kStripSolo) >= 0.5f) return true;
@@ -579,9 +635,10 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
     next.fader_l = fader * (pan > 0 ? 1.0f - pan : 1.0f);
     next.fader_r = fader * (pan < 0 ? 1.0f + pan : 1.0f);
     next.send_pre = sm[kStripSendPre];
-    next.send[0] = sm[kStripSendReverb];
-    next.send[1] = sm[kStripSendDelay];
-    next.send[2] = sm[kStripSendChorus];
+    const bool follow = follow_midi_sends();  // + the file's CC91/CC93 levels
+    next.send[0] = sm[kStripSendReverb] + (follow ? midi_send(index, kBusReverb) : 0.0f);
+    next.send[1] = sm[kStripSendDelay] + (follow ? midi_send(index, kBusDelay) : 0.0f);
+    next.send[2] = sm[kStripSendChorus] + (follow ? midi_send(index, kBusChorus) : 0.0f);
     if (first) prev = next;
     st.d = next;
 
