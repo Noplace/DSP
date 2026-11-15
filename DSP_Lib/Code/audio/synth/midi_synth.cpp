@@ -114,12 +114,36 @@ void MidiSynth::BuildInstrumentBank() {
     auto cal = std::make_shared<instruments::StringCalibration>();
     std::string path = calibration_dir_ + "\\harpsichord_english.cal";
     if (cal->Load(path.c_str()) && !cal->notes.empty()) {
-      harpsichord = add(new instruments::CalibratedString(cal, 0.12f, 0.35f));
+      instruments::CalibratedStringOptions opt;
+      opt.release_t60_s = 0.12f;
+      opt.level = 0.35f;
+      harpsichord = add(new instruments::CalibratedString(cal, opt));
       calibrated_instruments_.push_back("harpsichord (" + cal->name + ")");
     }
   }
   if (!harpsichord)
     harpsichord = add(new WaveguideString(WaveguideString::Harpsichord()));
+
+  // Grand piano from recordings (with velocity layers); honky-tonk = the same piano with its
+  // unison strings far out of tune.
+  instruments::InstrumentProcessor* grand = nullptr;
+  instruments::InstrumentProcessor* honky_tonk = nullptr;
+  if (!calibration_dir_.empty()) {
+    auto cal = std::make_shared<instruments::StringCalibration>();
+    std::string path = calibration_dir_ + "\\piano_steinway_b.cal";
+    if (cal->Load(path.c_str()) && !cal->notes.empty()) {
+      instruments::CalibratedStringOptions opt;
+      opt.release_t60_s = 0.3f;
+      opt.level = 0.35f;
+      opt.detune_cents = 0.6f;
+      opt.recorded_tuning = true;     // the piano's own stretched tuning
+      opt.undamped_from_note = 89;    // top strings have no dampers (F6 up)
+      grand = add(new instruments::CalibratedString(cal, opt));
+      opt.detune_cents = 12.0f;
+      honky_tonk = add(new instruments::CalibratedString(cal, opt));
+      calibrated_instruments_.push_back("piano (" + cal->name + ")");
+    }
+  }
   auto piano       = add(new WaveguideString(WaveguideString::Piano()));
   auto guitar      = add(new WaveguideString(WaveguideString::NylonGuitar()));
   auto steel       = add(new WaveguideString(WaveguideString::SteelGuitar()));
@@ -143,7 +167,11 @@ void MidiSynth::BuildInstrumentBank() {
   auto modal = [&](const instruments::ModalParams& p) { return add(new ModalInstrument(p)); };
   drum_kit_ = add(ModalInstrument::NewDrumKit());
 
-  assign(0, 5, piano);           // pianos
+  assign(0, 5, piano);           // pianos (preset) ...
+  if (grand) {                   // ... or calibrated from recordings
+    assign(0, 2, grand);         // acoustic, bright, electric grand
+    assign(3, 3, honky_tonk);
+  }
   assign(6, 7, harpsichord);     // harpsichord, clavinet
   assign(8, 8, modal(ModalInstrument::Celesta()));
   assign(9, 9, modal(ModalInstrument::Glockenspiel()));

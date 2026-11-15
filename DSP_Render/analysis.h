@@ -25,9 +25,18 @@ struct Partial {
   double freq_hz;        // measured
   double cents_off;      // vs n * f0 (positive = sharp)
   double level_db;       // initial level (fit intercept at the onset)
+  double spec_db;        // level in the spectrum 30-770 ms after the onset
   double t60_s;          // decay time; < 0 if it could not be fitted
   double fit_range_s;    // length of the segment the decay was fitted over
+  // Two-stage decay (piano unisons): fast "prompt" decay, then a slower "aftersound" from the knee
+  // on. If one slope fits about as well, both equal t60_s and after_db is very low.
+  double prompt_t60_s, after_t60_s;
+  double knee_s;         // time of the change
+  double after_db;       // aftersound line extrapolated to the onset, relative to the prompt line
 };
+
+// Velocity layer number from tags like "_vl3_" or "_v2_" in a file name, or -1.
+int VelocityLayerFromFileName(const char* path);
 
 struct NoteAnalysis {
   int midi_note = -1;        // as measured (named note + octave_shift)
@@ -42,6 +51,11 @@ struct NoteAnalysis {
   // Decay-rate model sigma(f) = b1 + b3 f^2 (1/s, amplitude e-folding rate), fitted to the
   // partials: T60 = ln(1000) / sigma.
   double b1 = 0, b3 = 0;
+  // The same model for the prompt and aftersound stages, and the typical aftersound level
+  // (median over partials, dB relative to the prompt at the onset) and knee time.
+  double prompt_b1 = 0, prompt_b3 = 0, after_b1 = 0, after_b3 = 0;
+  double after_db = -100, knee_s = 0;
+  double peak = 0;           // peak sample level of the recording
 };
 
 // Analyses a sustained note. `midi_note` gives the expected pitch (the search allows +-1.5 semitones

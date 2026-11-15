@@ -321,7 +321,7 @@ int CmdSurvey(int argc, char** argv) {
   auto files = CollectRecordings(argv[2]);
   if (files.empty()) { fprintf(stderr, "no WAV files with note names in %s\n", argv[2]); return 1; }
   int shift = ConsensusOctave(files);
-  printf("note  MIDI    f0 Hz   cents        B   partials  T60(f0)  T60 p2  T60 p4  T60 p8  T60@2k  T60@5k  len s\n");
+  printf("note  vel MIDI    f0 Hz   cents        B   parts  T60(f0)  T60 p2  T60 p4  T60@2k  T60@5k  peak dB | 2-stage: after dB  knee s  len s\n");
   for (auto& [named, path] : files) {
     if (named < 0) continue;
     analysis::Audio audio;
@@ -335,11 +335,15 @@ int CmdSurvey(int argc, char** argv) {
       return -1.0;
     };
     auto model = [&](double f) { return 6.907755 / std::max(1e-9, a.b1 + a.b3 * f * f); };
-    char name[8];
-    printf("%-5s %4d  %8.2f  %+5.1f  %8.1e  %5d    %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %5.1f\n",
-           NoteName(a.midi_note, name, sizeof(name)), a.midi_note, a.f0_hz, a.tuning_cents, a.inharmonicity,
-           int(a.partials.size()), t60_of(1), t60_of(2), t60_of(4), t60_of(8), model(2000), model(5000),
-           audio.mono.size() / double(audio.rate));
+    int two_stage = 0;
+    for (auto& p : a.partials) if (p.n <= 12 && p.after_db > -99) ++two_stage;
+    char name[8], stage[48];
+    if (a.after_db > -99) sprintf_s(stage, "%+6.1f  %5.2f (%d)", a.after_db, a.knee_s, two_stage);
+    else sprintf_s(stage, "     -      -     ");
+    printf("%-5s %3d %4d  %8.2f  %+5.1f  %8.1e  %4d   %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %6.1f   | %s  %5.1f\n",
+           NoteName(a.midi_note, name, sizeof(name)), analysis::VelocityLayerFromFileName(path.c_str()), a.midi_note,
+           a.f0_hz, a.tuning_cents, a.inharmonicity, int(a.partials.size()), t60_of(1), t60_of(2), t60_of(4),
+           model(2000), model(5000), 20 * log10(a.peak + 1e-12), stage, audio.mono.size() / double(audio.rate));
   }
   return 0;
 }
@@ -362,58 +366,102 @@ int CmdCalibrate(int argc, char** argv) {
   size_t dot = stem.find_last_of('.');
   if (dot != std::string::npos) stem.resize(dot);
   cal.name = stem;
-  printf("note    f0 Hz        B   T60 f0  T60 2k  disp err  string removed  exc peak\n");
+  // Group recordings by note; each file of a note is one velocity layer ("_vl3_", "_v2_"...).
+  std::vector<std::pair<int, std::vector<std::pair<int, std::string>>>> groups;
+  int max_layer = 1;
   for (auto& [named, path] : files) {
+    int layer = std::max(1, analysis::VelocityLayerFromFileName(path.c_str()));
+    max_layer = std::max(max_layer, layer);
+    if (groups.empty() || groups.back().first != named) groups.push_back({named, {}});
+    groups.back().second.push_back({layer, path});
+  }
+  printf("note  layers    f0 Hz        B   T60 f0  T60 2k  disp rms/max, filter | per layer: velocity, string removed, exc peak\n");
+  for (auto& [named, layers] : groups) {
+    std::sort(layers.begin(), layers.end());
+    // String parameters from the loudest layer (most partials above the noise).
     analysis::Audio audio;
     analysis::NoteAnalysis a;
-    if (!analysis::ReadWav(path.c_str(), audio) || !analysis::AnalyzeNote(audio, named, a, 40, shift)) {
-      printf("%s: analysis failed\n", path.c_str());
+    if (!analysis::ReadWav(layers.back().second.c_str(), audio) || !analysis::AnalyzeNote(audio, named, a, 40, shift)) {
+      printf("%s: analysis failed\n", layers.back().second.c_str());
       continue;
     }
     LoopParams lp = {a.f0_hz, a.inharmonicity, std::max(0.01, a.b1), std::max(0.0, a.b3)};
     LoopDesign design = DesignLoop(audio.rate, lp, DispersionStagesFor(a.f0_hz));
-    StringLoop loop;
-    loop.Allocate(int(audio.rate / 8) + 64);
-    loop.SetDesign(design);
 
-    // Inverse filter from just before the onset.
-    const size_t start = a.onset > audio.rate / 100 ? a.onset - audio.rate / 100 : 0;
-    const size_t exc_len = size_t(exc_ms * 0.001 * audio.rate);
-    const size_t check_len = std::min(audio.mono.size() - start, exc_len + size_t(0.4 * audio.rate));
-    std::vector<float> residual(check_len);
-    for (size_t i = 0; i < check_len; ++i) residual[i] = loop.Inverse(audio.mono[start + i]);
-    // How much of the recording the fitted string explains after the excitation window.
-    double ey = 1e-30, ee = 1e-30;
-    for (size_t i = exc_len; i < check_len; ++i) {
-      ey += double(audio.mono[start + i]) * audio.mono[start + i];
-      ee += double(residual[i]) * residual[i];
-    }
     CalibratedNote cn;
     cn.midi_note = a.midi_note;
     cn.f0_hz = float(a.f0_hz);
-    cn.inharmonicity = float(a.inharmonicity);
+    // Too few partials to see the stretch: leave B unknown (0) so the instrument extrapolates it.
+    cn.inharmonicity = a.partials.size() >= 5 ? float(a.inharmonicity) : 0.0f;
     cn.b1 = float(lp.b1);
     cn.b3 = float(lp.b3);
-    for (float v : audio.mono) cn.peak = std::max(cn.peak, fabsf(v));
+    cn.peak = float(a.peak);
     cn.excitation_rate = audio.rate;
-    cn.excitation.assign(residual.begin(), residual.begin() + std::min(exc_len, residual.size()));
-    const size_t fade = cn.excitation.size() / 4;  // half-Hann fade over the last quarter
-    for (size_t i = 0; i < fade; ++i) {
-      double w = 0.5 + 0.5 * cos(3.14159265358979 * (i + 1) / fade);
-      cn.excitation[cn.excitation.size() - fade + i] *= float(w);
+    if (a.after_db > -40 && a.after_db < -3) {  // a clear aftersound: two strings
+      // First string keeps the overall decay -- the loop the excitation is recovered with, so
+      // resynthesis stays consistent; the second string adds the slower aftersound.
+      cn.after_b1 = float(std::max(0.005, a.after_b1));
+      cn.after_b3 = float(std::max(0.0, a.after_b3));
+      double ratio = pow(10.0, a.after_db / 20.0);
+      cn.after_level = float(ratio / (1.0 + ratio));
+      cn.detune_cents = 0.0f;  // set by the instrument (beating is not measured yet)
     }
-    float exc_peak = 0;
-    for (float v : cn.excitation) exc_peak = std::max(exc_peak, fabsf(v));
+
     char name[8];
     auto t60 = [&](double f) { return 6.907755 / (lp.b1 + lp.b3 * f * f); };
-    printf("%-5s %8.2f  %8.1e  %6.2f  %6.2f  %6.1f c   %8.1f dB    %6.1f dB\n", NoteName(a.midi_note, name, sizeof(name)),
-           a.f0_hz, a.inharmonicity, t60(a.f0_hz), t60(2000), design.max_partial_error_cents, 10 * log10(ey / ee),
-           20 * log10(exc_peak / cn.peak));
+    char disp[24];
+    if (design.biquads) sprintf_s(disp, "AS%2d", design.biquads);
+    else sprintf_s(disp, "1o%2d", design.stages);
+    printf("%-5s %4d  %8.2f  %8.1e  %6.2f  %6.2f  %5.1f/%5.1f c %s |", NoteName(a.midi_note, name, sizeof(name)),
+           int(layers.size()), a.f0_hz, a.inharmonicity, t60(a.f0_hz), t60(2000), design.rms_partial_error_cents,
+           design.max_partial_error_cents, disp);
+    for (auto& [layer, path] : layers) {
+      analysis::Audio la;
+      analysis::NoteAnalysis lna;
+      if (!analysis::ReadWav(path.c_str(), la) || !analysis::AnalyzeNote(la, named, lna, 40, shift)) continue;
+      StringLoop loop;
+      loop.Allocate(int(la.rate / 8) + 64);
+      loop.SetDesign(design);
+      // Inverse filter from just before the onset.
+      const size_t start = lna.onset > la.rate / 100 ? lna.onset - la.rate / 100 : 0;
+      const size_t exc_len = size_t(exc_ms * 0.001 * la.rate);
+      const size_t check_len = std::min(la.mono.size() - start, exc_len + size_t(0.4 * la.rate));
+      std::vector<float> residual(check_len);
+      for (size_t i = 0; i < check_len; ++i) residual[i] = loop.Inverse(la.mono[start + i]);
+      // How much of the recording the fitted string explains after the excitation window.
+      double ey = 1e-30, ee = 1e-30;
+      for (size_t i = exc_len; i < check_len; ++i) {
+        ey += double(la.mono[start + i]) * la.mono[start + i];
+        ee += double(residual[i]) * residual[i];
+      }
+      ExcitationLayer el;
+      el.velocity = float(layer) / max_layer;
+      el.peak = float(lna.peak);
+      el.samples.assign(residual.begin(), residual.begin() + std::min(exc_len, residual.size()));
+      const size_t fade = el.samples.size() / 4;  // half-Hann fade over the last quarter
+      for (size_t i = 0; i < fade; ++i) {
+        double w = 0.5 + 0.5 * cos(3.14159265358979 * (i + 1) / fade);
+        el.samples[el.samples.size() - fade + i] *= float(w);
+      }
+      float exc_peak = 0;
+      for (float v : el.samples) exc_peak = std::max(exc_peak, fabsf(v));
+      printf("  %.2f %4.1f dB %5.1f dB", el.velocity, 10 * log10(ey / ee), 20 * log10(exc_peak / std::max(1e-9f, el.peak)));
+      cn.layers.push_back(std::move(el));
+    }
+    printf("\n");
+    // Single-layer instruments keep the plain excitation field (version 1 behaviour).
+    if (cn.layers.size() == 1) {
+      cn.excitation = std::move(cn.layers[0].samples);
+      cn.layers.clear();
+    }
     cal.notes.push_back(std::move(cn));
   }
   if (!cal.Save(argv[3])) { fprintf(stderr, "cannot write %s\n", argv[3]); return 1; }
   size_t samples = 0;
-  for (auto& n : cal.notes) samples += n.excitation.size();
+  for (auto& n : cal.notes) {
+    samples += n.excitation.size();
+    for (auto& l : n.layers) samples += l.samples.size();
+  }
   printf("wrote %s: %zu notes, %.0f KB of excitation\n", argv[3], cal.notes.size(), samples * 4 / 1024.0);
   return 0;
 }
@@ -424,7 +472,8 @@ int CmdCompare(int argc, char** argv) {
   if (argc < 4) return 2;
   const int program = atoi(argv[2]);
   const char* wav = argv[3];
-  const char* ab_path = argc > 4 ? argv[4] : nullptr;
+  const char* ab_path = argc > 4 && strcmp(argv[4], "-") ? argv[4] : nullptr;
+  const int velocity = argc > 5 ? atoi(argv[5]) : 100;
   analysis::Audio rec;
   std::string error;
   if (!analysis::ReadWav(wav, rec, &error)) { fprintf(stderr, "%s: %s\n", wav, error.c_str()); return 1; }
@@ -435,7 +484,7 @@ int CmdCompare(int argc, char** argv) {
   Engine e(rec.rate);
   if (e.synth.calibrated_instruments().empty()) printf("note: no calibration found (looked in '%s')\n", e.synth.calibration_dir().c_str());
   const double seconds = rec.mono.size() / double(rec.rate);
-  auto stereo = RenderNote(e, program, ra.midi_note, 100, std::max(0.5, seconds - 0.5), 0.5);
+  auto stereo = RenderNote(e, program, ra.midi_note, velocity, std::max(0.5, seconds - 0.5), 0.5);
   analysis::Audio syn;
   syn.rate = rec.rate;
   syn.channels = 1;
@@ -444,32 +493,37 @@ int CmdCompare(int argc, char** argv) {
   if (!analysis::AnalyzeNote(syn, ra.midi_note, sa, 40, 0)) { fprintf(stderr, "cannot analyse the synth output\n"); return 1; }
 
   // Levels relative to each sound's strongest partial (absolute gain differs by design).
-  auto strongest = [](const analysis::NoteAnalysis& a) {
+  auto strongest = [](const analysis::NoteAnalysis& a, double analysis::Partial::*field) {
     double m = -300;
-    for (auto& p : a.partials) m = std::max(m, p.level_db);
+    for (auto& p : a.partials) m = std::max(m, p.*field);
     return m;
   };
-  const double rtop = strongest(ra), stop = strongest(sa);
+  const double rtop = strongest(ra, &analysis::Partial::level_db), stop = strongest(sa, &analysis::Partial::level_db);
+  const double rspec = strongest(ra, &analysis::Partial::spec_db), sspec = strongest(sa, &analysis::Partial::spec_db);
   char name[8];
   printf("%s, MIDI %d (%s), program %d at %u Hz\n", wav, ra.midi_note, NoteName(ra.midi_note, name, sizeof(name)), program, rec.rate);
   printf("inharmonicity B: recording %.2e, synth %.2e\n", ra.inharmonicity, sa.inharmonicity);
-  printf("   n   rec dB  syn dB   diff | rec T60  syn T60  ratio | partial offset rec / syn (cents)\n");
-  double level_err = 0, t60_log_err = 0;
+  printf("(decay fit: level where each partial's decay line starts; spectrum: level 30-770 ms after the onset)\n");
+  printf("   n  decay fit: rec  syn  diff | spectrum: rec  syn  diff | rec T60  syn T60  ratio | offset rec / syn (cents)\n");
+  double level_err = 0, spec_err = 0, t60_log_err = 0;
   int level_count = 0, t60_count = 0;
   for (auto& rp : ra.partials) {
     const analysis::Partial* sp = nullptr;
     for (auto& p : sa.partials) if (p.n == rp.n) sp = &p;
-    if (!sp) { printf("  %2d  %6.1f       -        |  %6.2f       -        |  %+5.1f /   -\n", rp.n, rp.level_db - rtop, rp.t60_s, rp.cents_off); continue; }
+    if (!sp) { printf("  %2d  %14.1f     -        | %13.1f     -        |  %6.2f       -        |  %+5.1f /   -\n", rp.n,
+                      rp.level_db - rtop, rp.spec_db - rspec, rp.t60_s, rp.cents_off); continue; }
     double dl = (sp->level_db - stop) - (rp.level_db - rtop);
-    level_err += fabs(dl); ++level_count;
+    double ds = (sp->spec_db - sspec) - (rp.spec_db - rspec);
+    level_err += fabs(dl); spec_err += fabs(ds); ++level_count;
     double ratio = (rp.t60_s > 0 && sp->t60_s > 0) ? sp->t60_s / rp.t60_s : 0;
     if (ratio > 0) { t60_log_err += fabs(log2(ratio)); ++t60_count; }
-    printf("  %2d  %6.1f  %6.1f  %+5.1f |  %6.2f   %6.2f  %5.2f |  %+5.1f / %+5.1f\n", rp.n, rp.level_db - rtop,
-           sp->level_db - stop, dl, rp.t60_s, sp->t60_s, ratio, rp.cents_off, sp->cents_off);
+    printf("  %2d  %14.1f %5.1f %+5.1f | %13.1f %5.1f %+5.1f |  %6.2f   %6.2f  %5.2f |  %+5.1f / %+5.1f\n", rp.n,
+           rp.level_db - rtop, sp->level_db - stop, dl, rp.spec_db - rspec, sp->spec_db - sspec, ds, rp.t60_s, sp->t60_s,
+           ratio, rp.cents_off, sp->cents_off);
   }
-  printf("mean |level difference| %.1f dB over %d partials; T60 typically off by a factor %.2f over %d partials\n",
-         level_count ? level_err / level_count : 0.0, level_count, t60_count ? pow(2.0, t60_log_err / t60_count) : 0.0,
-         t60_count);
+  printf("mean |level difference| %.1f dB (spectrum %.1f dB) over %d partials; T60 typically off by a factor %.2f over %d partials\n",
+         level_count ? level_err / level_count : 0.0, level_count ? spec_err / level_count : 0.0, level_count,
+         t60_count ? pow(2.0, t60_log_err / t60_count) : 0.0, t60_count);
 
   if (ab_path) {
     auto peak_of = [](const std::vector<float>& v) { float p = 1e-9f; for (float x : v) p = std::max(p, fabsf(x)); return p; };
@@ -481,6 +535,18 @@ int CmdCompare(int argc, char** argv) {
     for (float v : syn.mono) { ab.push_back(v * gs); ab.push_back(v * gs); }
     if (WriteWav(ab_path, ab, rec.rate)) printf("A/B written to %s (recording, then synth, both peak-normalised)\n", ab_path);
   }
+  return 0;
+}
+
+// Designs one string loop and prints the result (for checking the dispersion design).
+int CmdDesign(int argc, char** argv) {
+  if (argc < 4) return 2;
+  using namespace synth::instruments;
+  LoopParams p = {atof(argv[2]), atof(argv[3]), 0.5, 1e-7};
+  double rate = argc > 4 ? atof(argv[4]) : 44100;
+  LoopDesign d = DesignLoop(rate, p, kMaxDispersionStages);
+  printf("f0 %.2f Hz, B %.2e at %.0f Hz: delay %d, first-order stages %d, biquads %d, partial error rms %.2f / max %.2f cents\n",
+         p.f0_hz, p.inharmonicity, rate, d.delay, d.stages, d.biquads, d.rms_partial_error_cents, d.max_partial_error_cents);
   return 0;
 }
 
@@ -548,6 +614,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "survey")) result = CmdSurvey(argc, argv);
     else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
     else if (!strcmp(argv[1], "compare")) result = CmdCompare(argc, argv);
+    else if (!strcmp(argv[1], "design")) result = CmdDesign(argc, argv);
   }
   if (result == 2) {
     fprintf(stderr,
@@ -560,7 +627,7 @@ int main(int argc, char** argv) {
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
             "  DSP_Render survey <folder of recordings>\n"
             "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms]\n"
-            "  DSP_Render compare <program> <recording.wav> [ab_out.wav]\n");
+            "  DSP_Render compare <program> <recording.wav> [ab_out.wav|-] [velocity]\n");
   }
   return result;
 }

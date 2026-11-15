@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #define NOMINMAX  // std::min/std::max, not the windows.h macros
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include "../../../dsp.h"
 
 namespace dsp {
@@ -39,6 +41,17 @@ std::vector<double> Median3(const std::vector<double>& v) {
     out[i] = std::max(std::min(a, b), std::min(std::max(a, b), c));
   }
   return out;
+}
+
+// Linear interpolation of v (one value per entry of xs, sorted) at x, clamped at the ends.
+double Interp(const std::vector<double>& xs, const std::vector<double>& v, double x) {
+  if (xs.empty()) return 0;
+  if (x <= xs.front()) return v.front();
+  if (x >= xs.back()) return v.back();
+  size_t i = 0;
+  while (i + 1 < xs.size() && xs[i + 1] < x) ++i;
+  double t = (x - xs[i]) / (xs[i + 1] - xs[i]);
+  return v[i] + t * (v[i + 1] - v[i]);
 }
 
 // Resamples `src` (at src_rate) to dst_rate while transposing by `pitch_ratio` (>1 = higher),
@@ -67,12 +80,17 @@ std::vector<float> Resample(const std::vector<float>& src, double src_rate, doub
 
 }  // namespace
 
-CalibratedString::CalibratedString(std::shared_ptr<const StringCalibration> calibration, real_t release_t60_s,
-                                   real_t level)
-    : InstrumentProcessor(), cal_(std::move(calibration)), release_t60_s_(release_t60_s), level_(level), gain_(1.0f),
+CalibratedString::CalibratedString(std::shared_ptr<const StringCalibration> calibration,
+                                   const CalibratedStringOptions& options)
+    : InstrumentProcessor(), cal_(std::move(calibration)), options_(options), gain_(1.0f), layered_(false),
       voices_(nullptr), dc_coef_(0.997f), level_decay_(0.9995f), cdata_(nullptr) {
   memset(designs_, 0, sizeof(designs_));
+  memset(designs_b_, 0, sizeof(designs_b_));
   memset(params_, 0, sizeof(params_));
+  memset(after_level_, 0, sizeof(after_level_));
+  for (float& r : tuning_ratio_) r = 1.0f;
+  for (const auto& n : cal_->notes)
+    if (!n.layers.empty()) layered_ = true;
 }
 
 CalibratedString::~CalibratedString() {
@@ -82,47 +100,87 @@ CalibratedString::~CalibratedString() {
 void CalibratedString::BuildTables() {
   const auto& notes = cal_->notes;
   const size_t n = notes.size();
-  std::vector<double> midi(n), log_b(n), log_b1(n), log_b3(n), peaks(n);
+  std::vector<double> midi(n), log_b1(n), log_b3(n), loud(n), tuning(n);
+  std::vector<double> b_midi, log_b;       // only notes where B could be measured
+  std::vector<double> after_midi, log_ab1, log_ab3, after_lvl;
+  std::vector<double> all_after(n, 0.0);
   for (size_t i = 0; i < n; ++i) {
-    midi[i] = notes[i].midi_note;
-    log_b[i] = log(notes[i].inharmonicity + 1e-9);
-    log_b1[i] = log(std::max(0.005f, notes[i].b1));
-    log_b3[i] = log(notes[i].b3 + 1e-10);
-    peaks[i] = notes[i].peak;
+    const CalibratedNote& c = notes[i];
+    midi[i] = c.midi_note;
+    tuning[i] = c.f0_hz > 0 ? 1200.0 * log2(c.f0_hz / NoteHz(c.midi_note)) : 0.0;
+    if (c.inharmonicity > 0) {
+      b_midi.push_back(c.midi_note);
+      log_b.push_back(log(c.inharmonicity));
+    }
+    log_b1[i] = log(std::max(0.005f, c.b1));
+    log_b3[i] = log(c.b3 + 1e-10);
+    loud[i] = c.layers.empty() ? c.peak : c.layers.back().peak;  // loudest layer
+    all_after[i] = c.after_level;
+    if (c.after_level > 0) {
+      after_midi.push_back(c.midi_note);
+      log_ab1.push_back(log(std::max(0.005f, c.after_b1)));
+      log_ab3.push_back(log(c.after_b3 + 1e-10));
+    }
   }
   log_b = Median3(log_b);
   log_b1 = Median3(log_b1);
   log_b3 = Median3(log_b3);
+  log_ab1 = Median3(log_ab1);
+  log_ab3 = Median3(log_ab3);
+  all_after = Median3(all_after);
+  tuning = Median3(tuning);
 
-  auto interp = [&](const std::vector<double>& v, int m) {
-    if (m <= midi.front()) return v.front();
-    if (m >= midi.back()) return v.back();
-    size_t i = 0;
-    while (i + 1 < n && midi[i + 1] < m) ++i;
-    double t = (m - midi[i]) / (midi[i + 1] - midi[i]);
-    return v[i] + t * (v[i + 1] - v[i]);
-  };
-
-  for (int m = 0; m < 128; ++m) {
+  // Each note only writes its own table entries, so the (slow) loop design runs on all cores.
+  auto build_note = [&](int m) {
+    tuning_ratio_[m] = options_.recorded_tuning ? float(pow(2.0, Interp(midi, tuning, m) / 1200.0)) : 1.0f;
     LoopParams p;
-    p.f0_hz = NoteHz(m);
-    p.inharmonicity = std::max(0.0, exp(interp(log_b, m)) - 1e-9);
-    p.b1 = exp(interp(log_b1, m));
-    p.b3 = std::max(0.0, exp(interp(log_b3, m)) - 1e-10);
+    p.f0_hz = NoteHz(m) * tuning_ratio_[m];
+    p.inharmonicity = b_midi.empty() ? 0.0 : exp(Interp(b_midi, log_b, m));
+    p.b1 = exp(Interp(midi, log_b1, m));
+    p.b3 = std::max(0.0, exp(Interp(midi, log_b3, m)) - 1e-10);
     params_[m] = p;
-    designs_[m] = DesignLoop(sample_rate_, p, DispersionStagesFor(p.f0_hz));
+    const int stages = DispersionStagesFor(p.f0_hz);
+    designs_[m] = DesignLoop(sample_rate_, p, stages);
 
-    // Excitation from the nearest recorded note, transposed to this note.
+    // Second string: aftersound decay, slightly detuned, same stiffness (reuses the dispersion).
+    after_level_[m] = float(std::max(0.0, Interp(midi, all_after, m)));
+    if (after_level_[m] > 0.01f && !after_midi.empty()) {
+      LoopParams pb = p;
+      pb.f0_hz = p.f0_hz * pow(2.0, options_.detune_cents / 1200.0);
+      pb.b1 = exp(Interp(after_midi, log_ab1, m));
+      pb.b3 = std::max(0.0, exp(Interp(after_midi, log_ab3, m)) - 1e-10);
+      designs_b_[m] = DesignLoopLike(designs_[m], sample_rate_, pb);
+    } else {
+      after_level_[m] = 0;
+    }
+
+    // Excitation layers from the nearest recorded note, transposed to this note.
     size_t best = 0;
     for (size_t i = 1; i < n; ++i)
       if (fabs(midi[i] - m) < fabs(midi[best] - m)) best = i;
     const CalibratedNote& src = notes[best];
-    excitations_[m] = Resample(src.excitation, src.excitation_rate, sample_rate_, p.f0_hz / src.f0_hz);
-  }
+    const double ratio = p.f0_hz / src.f0_hz;
+    layers_[m].clear();
+    if (src.layers.empty()) {
+      layers_[m].push_back({1.0f, Resample(src.excitation, src.excitation_rate, sample_rate_, ratio)});
+    } else {
+      for (const ExcitationLayer& l : src.layers)
+        layers_[m].push_back({l.velocity, Resample(l.samples, src.excitation_rate, sample_rate_, ratio)});
+    }
+  };
+  std::atomic<int> next(0);
+  auto worker = [&]() {
+    for (int m; (m = next.fetch_add(1)) < 128;) build_note(m);
+  };
+  const unsigned threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+  std::vector<std::thread> pool;
+  for (unsigned t = 1; t < threads; ++t) pool.emplace_back(worker);
+  worker();
+  for (auto& t : pool) t.join();
 
-  std::sort(peaks.begin(), peaks.end());
-  double median_peak = peaks[n / 2];
-  gain_ = float(level_ / std::max(1e-6, median_peak));
+  std::sort(loud.begin(), loud.end());
+  double median_peak = loud[n / 2];
+  gain_ = float(options_.level / std::max(1e-6, median_peak));
 }
 
 int CalibratedString::Load() {
@@ -132,14 +190,20 @@ int CalibratedString::Load() {
     return S_FALSE;
   BuildTables();
   voices_ = new Voice[Polyphony];
+  bool any_second = false;
+  for (int m = 0; m < 128; ++m) any_second |= after_level_[m] > 0;
   for (int v = 0; v < Polyphony; ++v) {
     Voice& voice = voices_[v];
     voice.loop.Allocate(int(sample_rate_ / 8) + 64);
-    voice.excitation = nullptr;
-    voice.exc_len = voice.exc_pos = 0;
+    if (any_second) voice.loop_b.Allocate(int(sample_rate_ / 8) + 64);
+    voice.exc_lo = voice.exc_hi = nullptr;
+    voice.len_lo = voice.len_hi = voice.exc_pos = 0;
+    voice.w_lo = voice.w_hi = 0;
+    voice.share_b = 0;
+    voice.two_strings = false;
     voice.dc_x1 = voice.dc_y1 = 0;
     voice.level = 0;
-    voice.base_gain = 0;
+    voice.base_gain = voice.base_gain_b = 0;
     voice.note = 0;
     voice.freq = 0;
     voice.active = voice.released = false;
@@ -155,7 +219,7 @@ int CalibratedString::Unload() {
     return S_FALSE;
   delete[] voices_;
   voices_ = nullptr;
-  for (auto& e : excitations_) std::vector<float>().swap(e);
+  for (auto& l : layers_) std::vector<Layer>().swap(l);
   loaded_ = false;
   return S_OK;
 }
@@ -175,14 +239,57 @@ int CalibratedString::NoteOn(int v) {
   Voice& voice = voices_[v];
   const auto& nd = cdata_->note_data_array[v];
   const int note = std::min(127, std::max(0, nd.note));
+  const bool bent = voice.freq > 0 && fabs(voice.freq / NoteHz(note) - 1.0) > 1e-4;
+  const double target = (voice.freq > 0 ? voice.freq : NoteHz(note)) * tuning_ratio_[note];
+
   LoopDesign design = designs_[note];
-  if (voice.freq > 0 && fabs(voice.freq / NoteHz(note) - 1.0) > 1e-4)
-    design = RetuneLoop(design, sample_rate_, voice.freq);  // started under pitch bend
+  if (bent) design = RetuneLoop(design, sample_rate_, target);  // started under pitch bend
   voice.loop.SetDesign(design);
   voice.loop.Reset();
   voice.base_gain = design.loss_g;
-  voice.excitation = excitations_[note].data();
-  voice.exc_len = int(excitations_[note].size());
+
+  voice.two_strings = after_level_[note] > 0;
+  voice.share_b = after_level_[note];
+  if (voice.two_strings) {
+    LoopDesign db = designs_b_[note];
+    if (bent) db = RetuneLoop(db, sample_rate_, target * pow(2.0, options_.detune_cents / 1200.0));
+    voice.loop_b.SetDesign(db);
+    voice.loop_b.Reset();
+    voice.base_gain_b = db.loss_g;
+  }
+
+  // Velocity: crossfade the two layers around it; below the softest layer, fade it down.
+  const std::vector<Layer>& layers = layers_[note];
+  const float vel = layered_ ? std::max(0.0f, std::min(1.0f, float(nd.velocity))) : 1.0f;
+  size_t hi = 0;
+  while (hi < layers.size() && layers[hi].velocity < vel) ++hi;
+  if (hi == 0) {
+    float lowest = layers[0].velocity;
+    float t = lowest > 0 ? vel / lowest : 1.0f;  // 0..1 below the softest layer
+    float db = (1.0f - t) * options_.min_velocity_gain_db;
+    voice.exc_lo = voice.exc_hi = layers[0].samples.data();
+    voice.len_lo = voice.len_hi = int(layers[0].samples.size());
+    voice.w_lo = powf(10.0f, db / 20.0f);
+    voice.w_hi = 0;
+  } else if (hi == layers.size()) {
+    const Layer& top = layers.back();
+    voice.exc_lo = voice.exc_hi = top.samples.data();
+    voice.len_lo = voice.len_hi = int(top.samples.size());
+    voice.w_lo = 1.0f;
+    voice.w_hi = 0;
+  } else {
+    const Layer& a = layers[hi - 1];
+    const Layer& b = layers[hi];
+    float t = (vel - a.velocity) / std::max(1e-6f, b.velocity - a.velocity);
+    voice.exc_lo = a.samples.data();
+    voice.len_lo = int(a.samples.size());
+    voice.exc_hi = b.samples.data();
+    voice.len_hi = int(b.samples.size());
+    voice.w_lo = 1.0f - t;
+    voice.w_hi = t;
+  }
+  voice.w_lo *= gain_;
+  voice.w_hi *= gain_;
   voice.exc_pos = 0;
   voice.dc_x1 = voice.dc_y1 = 0;
   voice.level = 1.0f;
@@ -197,28 +304,48 @@ int CalibratedString::NoteOff(int v) {
   if (!voice.active)
     return S_OK;
   voice.released = true;
-  voice.loop.SetLossGain(voice.base_gain * ReleaseGain(voice.freq > 0 ? voice.freq : NoteHz(voice.note), release_t60_s_));
+  if (voice.note >= options_.undamped_from_note)
+    return S_OK;  // no damper on this string: it rings on
+  const double f = voice.freq > 0 ? voice.freq : NoteHz(voice.note);
+  const float damp = ReleaseGain(f, options_.release_t60_s);
+  voice.loop.SetLossGain(voice.base_gain * damp);
+  if (voice.two_strings) voice.loop_b.SetLossGain(voice.base_gain_b * damp);
   return S_OK;
 }
 
 void CalibratedString::BendFrequency(real_t freq, int v) {
   Voice& voice = voices_[v];
   voice.freq = freq;
-  if (voice.active)
-    voice.loop.SetDesign(RetuneLoop(voice.loop.design(), sample_rate_, freq));
+  if (!voice.active)
+    return;
+  const double target = freq * tuning_ratio_[voice.note];
+  voice.loop.SetDesign(RetuneLoop(voice.loop.design(), sample_rate_, target));
+  if (voice.two_strings)
+    voice.loop_b.SetDesign(RetuneLoop(voice.loop_b.design(), sample_rate_, target * pow(2.0, options_.detune_cents / 1200.0)));
 }
 
 real_t CalibratedString::Tick(int v) {
   Voice& voice = voices_[v];
   if (!voice.active)
     return 0;
-  float exc = voice.exc_pos < voice.exc_len ? voice.excitation[voice.exc_pos++] : 0.0f;
-  float out = voice.loop.Tick(exc * gain_);
+  float exc = 0;
+  const int pos = voice.exc_pos;
+  if (pos < voice.len_lo) exc += voice.exc_lo[pos] * voice.w_lo;
+  if (voice.w_hi != 0 && pos < voice.len_hi) exc += voice.exc_hi[pos] * voice.w_hi;
+  const bool exciting = pos < std::max(voice.len_lo, voice.len_hi);
+  if (exciting) ++voice.exc_pos;
+
+  float out;
+  if (voice.two_strings)
+    out = voice.loop.Tick(exc * (1.0f - voice.share_b)) + voice.loop_b.Tick(exc * voice.share_b);
+  else
+    out = voice.loop.Tick(exc);
+
   float o = out - voice.dc_x1 + dc_coef_ * voice.dc_y1;
   voice.dc_x1 = out; voice.dc_y1 = o;
   float mag = fabsf(o);
   voice.level = mag > voice.level ? mag : voice.level * level_decay_;
-  if (voice.level < 1e-5f && voice.exc_pos >= voice.exc_len)
+  if (voice.level < 1e-5f && !exciting)
     voice.active = false;
   return o;
 }

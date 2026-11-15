@@ -107,7 +107,8 @@ class Channel : public Component {
     v.index = instrument_->AllocateVoice(v.generation);
     v.note = note;
     v.base_freq = freq;
-    v.gain = velocity * velocity;  // GM-style velocity curve (40*log10(v) dB)
+    // GM-style velocity curve (40*log10(v) dB), unless the instrument does velocity itself.
+    v.gain = instrument_->HandlesVelocity() ? 1.0f : velocity * velocity;
     v.held = true;
     v.sustained = false;
     instrument_->StartVoice(v.index, note, freq * bend_factor_, velocity);

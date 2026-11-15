@@ -27,6 +27,13 @@ namespace audio {
 namespace synth {
 namespace instruments {
 
+// One velocity layer of a recorded note.
+struct ExcitationLayer {
+  float velocity = 1.0f;          // 0..1, the playing strength this layer represents
+  float peak = 0;                 // peak level of that recording
+  std::vector<float> samples;     // excitation at CalibratedNote::excitation_rate
+};
+
 // Parameters measured from one recorded note of a real instrument.
 struct CalibratedNote {
   int midi_note = 0;
@@ -36,6 +43,12 @@ struct CalibratedNote {
   float peak = 0;             // peak level of the recording (for level normalisation)
   uint32_t excitation_rate = 0;
   std::vector<float> excitation;  // pluck + body, from inverse-filtering the recording
+  // Version 2 (piano): a second, slightly detuned string for the two-stage decay, and several
+  // velocity layers (if present they replace `excitation`).
+  float after_b1 = 0, after_b3 = 0;  // aftersound decay model (0 = no second string)
+  float after_level = 0;             // linear share of the excitation fed to the second string
+  float detune_cents = 0;            // second string vs the first
+  std::vector<ExcitationLayer> layers;  // sorted by velocity
 };
 
 // A calibrated string instrument: one entry per recorded note, sorted by MIDI note.

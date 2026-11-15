@@ -65,6 +65,9 @@ class InstrumentProcessor : public Component {
   virtual bool IsVoiceActive(int v) const { return adsr[v].stage() != 0; }
   // Rough current loudness of a voice (used to pick which releasing voice to steal).
   virtual real_t VoiceLevel(int v) const { return adsr[v].value(); }
+  // True if the instrument turns velocity into loudness itself (e.g. recorded velocity layers),
+  // so the channel must not apply its generic velocity curve on top.
+  virtual bool HandlesVelocity() const { return false; }
   // Pitch change on a sounding voice (pitch bend). Instruments that can't glide may ignore it.
   virtual void BendFrequency(real_t freq, int v) { SetFrequency(freq, v); }
 

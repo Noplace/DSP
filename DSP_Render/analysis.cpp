@@ -254,7 +254,7 @@ bool AnalyzeNote(const Audio& audio, int midi_note, NoteAnalysis& r, int max_par
     double f = spec.FindPeak(predicted - half, predicted + half, &lvl);
     if (f <= 0 || lvl < r.noise_floor_db + 15) continue;
     Partial p = {};
-    p.n = n; p.freq_hz = f; p.level_db = lvl; p.t60_s = -1;
+    p.n = n; p.freq_hz = f; p.level_db = lvl; p.spec_db = lvl; p.t60_s = -1;
     found.push_back(p);
     fit_x.push_back(double(n) * n);
     fit_y.push_back((f / n) * (f / n));
@@ -283,11 +283,11 @@ bool AnalyzeNote(const Audio& audio, int midi_note, NoteAnalysis& r, int max_par
     std::vector<double> nd(noise.begin() + noise.size() / 2, noise.end());
     std::sort(nd.begin(), nd.end());
     double floor_db = ToDb(nd.empty() ? 1e-9 : nd[nd.size() / 2]);
-    // Start at the envelope peak within the first 150 ms, stop 40 dB down or 10 dB above noise.
+    // Start at the envelope peak within the first 150 ms, stop 50 dB down or 10 dB above noise.
     size_t start = 0, limit = std::min(env.size(), size_t(0.15 / frame_dt) + 1);
     for (size_t i = 0; i < limit; ++i) if (env[i] > env[start]) start = i;
     double top = ToDb(env[start]);
-    double stop_db = std::max(top - 40.0, floor_db + 10.0);
+    double stop_db = std::max(top - 50.0, floor_db + 10.0);
     size_t end = start;
     while (end + 1 < env.size() && ToDb(env[end + 1]) > stop_db) ++end;
     if (end - start < 5) continue;
@@ -298,29 +298,89 @@ bool AnalyzeNote(const Audio& audio, int midi_note, NoteAnalysis& r, int max_par
     p.t60_s = -60.0 / b;
     p.level_db = a;  // fitted level at the onset
     p.fit_range_s = (end - start) * frame_dt;
+    p.prompt_t60_s = p.after_t60_s = p.t60_s;
+    p.knee_s = 0;
+    p.after_db = -100;
+
+    // Two-stage decay: best knee by least squares over two independent line segments.
+    auto sse = [&](size_t lo, size_t hi, double& la, double& lb) {
+      std::vector<double> x(tx.begin() + lo, tx.begin() + hi + 1), y(ty.begin() + lo, ty.begin() + hi + 1), w(x.size(), 1.0);
+      if (!FitLine(x, y, w, la, lb)) return 1e300;
+      double e = 0;
+      for (size_t i = 0; i < x.size(); ++i) { double d = y[i] - (la + lb * x[i]); e += d * d; }
+      return e;
+    };
+    double a1, b1line;
+    const size_t m = tx.size() - 1;
+    double single = sse(0, m, a1, b1line);
+    double best = 1e300, pa = 0, pb = 0, aa = 0, ab = 0;
+    size_t knee = 0;
+    for (size_t k = 4; k + 4 <= m; ++k) {
+      double la1, lb1, la2, lb2;
+      double e = sse(0, k, la1, lb1) + sse(k, m, la2, lb2);
+      if (e < best) { best = e; knee = k; pa = la1; pb = lb1; aa = la2; ab = lb2; }
+    }
+    if (knee > 0 && best < 0.6 * single && pb < -0.01 && ab < -0.01 && ab > pb) {
+      p.prompt_t60_s = -60.0 / pb;
+      p.after_t60_s = -60.0 / ab;
+      p.knee_s = tx[knee] - tx[0];
+      p.after_db = aa - pa;
+    }
   }
 
   // Decay-rate model sigma(f) = b1 + b3 f^2. Every partial counts equally (weighting by level let the
   // single strongest partial decide); points far off the line (notches, beating) are dropped and
   // the line refitted.
-  std::vector<double> sx, sy, sw;
-  for (const Partial& p : found) {
-    if (p.t60_s <= 0) continue;
-    sx.push_back(p.freq_hz * p.freq_hz);
-    sy.push_back(6.907755 / p.t60_s);
-    sw.push_back(1.0);
+  auto fit_sigma = [&](double Partial::*t60, double& out_b1, double& out_b3, bool two_stage_only = false) {
+    std::vector<double> sx, sy, sw;
+    for (const Partial& p : found) {
+      if (p.*t60 <= 0) continue;
+      if (two_stage_only && p.after_db <= -99) continue;  // single-slope partials say nothing here
+      sx.push_back(p.freq_hz * p.freq_hz);
+      sy.push_back(6.907755 / (p.*t60));
+      sw.push_back(1.0);
+    }
+    if (sx.size() >= 2 && FitLine(sx, sy, sw, out_b1, out_b3) && sx.size() >= 6) {
+      std::vector<double> res(sx.size());
+      for (size_t i = 0; i < sx.size(); ++i) res[i] = fabs(sy[i] - (out_b1 + out_b3 * sx[i]));
+      std::vector<double> sorted(res);
+      std::sort(sorted.begin(), sorted.end());
+      double mad = sorted[sorted.size() / 2] + 1e-9;
+      for (size_t i = 0; i < sx.size(); ++i) sw[i] = res[i] > 3.0 * mad ? 0.0 : 1.0;
+      FitLine(sx, sy, sw, out_b1, out_b3);
+    }
+  };
+  fit_sigma(&Partial::t60_s, r.b1, r.b3);
+  fit_sigma(&Partial::prompt_t60_s, r.prompt_b1, r.prompt_b3, true);
+  fit_sigma(&Partial::after_t60_s, r.after_b1, r.after_b3, true);
+  // Typical aftersound level and knee, over the partials that showed two stages (first 12).
+  std::vector<double> levels, knees;
+  for (const Partial& p : found)
+    if (p.n <= 12 && p.after_db > -99) { levels.push_back(p.after_db); knees.push_back(p.knee_s); }
+  if (!levels.empty()) {
+    std::sort(levels.begin(), levels.end());
+    std::sort(knees.begin(), knees.end());
+    r.after_db = levels[levels.size() / 2];
+    r.knee_s = knees[knees.size() / 2];
   }
-  if (sx.size() >= 2 && FitLine(sx, sy, sw, r.b1, r.b3) && sx.size() >= 6) {
-    std::vector<double> res(sx.size());
-    for (size_t i = 0; i < sx.size(); ++i) res[i] = fabs(sy[i] - (r.b1 + r.b3 * sx[i]));
-    std::vector<double> sorted(res);
-    std::sort(sorted.begin(), sorted.end());
-    double mad = sorted[sorted.size() / 2] + 1e-9;
-    for (size_t i = 0; i < sx.size(); ++i) sw[i] = res[i] > 3.0 * mad ? 0.0 : 1.0;
-    FitLine(sx, sy, sw, r.b1, r.b3);
-  }
+  r.peak = peak;
   r.partials = found;
   return true;
+}
+
+int VelocityLayerFromFileName(const char* path) {
+  const char* name = path;
+  for (const char* p = path; *p; ++p) if (*p == '\\' || *p == '/') name = p + 1;
+  for (const char* p = name; *p; ++p) {
+    if (*p != '_' || p[1] != 'v') continue;
+    const char* q = p + 2;
+    if (*q == 'l') ++q;
+    if (*q < '0' || *q > '9') continue;
+    int v = 0;
+    while (*q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0');
+    if (*q == '_' || *q == '.') return v;
+  }
+  return -1;
 }
 
 void PrintAnalysis(const NoteAnalysis& a) {
@@ -330,13 +390,21 @@ void PrintAnalysis(const NoteAnalysis& a) {
   printf("note %s%d (MIDI %d): expected %.2f Hz, measured f0 %.3f Hz (%+.1f cents vs A440 ET), B = %.2e, noise floor %.0f dB\n",
          names[a.midi_note % 12], a.midi_note / 12 - 1, a.midi_note, a.expected_hz, a.f0_hz, a.tuning_cents,
          a.inharmonicity, a.noise_floor_db);
-  printf("   n    freq Hz   cents   level dB    T60 s  (fit over s)\n");
+  printf("   n    freq Hz   cents   level dB    T60 s  (fit over s) | prompt  after  knee s  after dB\n");
   for (const Partial& p : a.partials) {
-    if (p.t60_s > 0)
-      printf("  %2d  %9.2f  %+6.1f  %8.1f  %7.2f  (%.2f)\n", p.n, p.freq_hz, p.cents_off, p.level_db, p.t60_s, p.fit_range_s);
+    if (p.t60_s > 0 && p.after_db > -99)
+      printf("  %2d  %9.2f  %+6.1f  %8.1f  %7.2f  (%.2f)     | %6.2f %6.2f  %5.2f  %+6.1f\n", p.n, p.freq_hz, p.cents_off,
+             p.level_db, p.t60_s, p.fit_range_s, p.prompt_t60_s, p.after_t60_s, p.knee_s, p.after_db);
+    else if (p.t60_s > 0)
+      printf("  %2d  %9.2f  %+6.1f  %8.1f  %7.2f  (%.2f)     | single stage\n", p.n, p.freq_hz, p.cents_off, p.level_db,
+             p.t60_s, p.fit_range_s);
     else
       printf("  %2d  %9.2f  %+6.1f  %8.1f        -\n", p.n, p.freq_hz, p.cents_off, p.level_db);
   }
+  if (a.after_db > -99)
+    printf("two-stage decay: prompt T60 %.2f s, aftersound T60 %.2f s (at f0), aftersound %+.1f dB, knee %.2f s\n",
+           6.907755 / std::max(1e-9, a.prompt_b1 + a.prompt_b3 * a.f0_hz * a.f0_hz),
+           6.907755 / std::max(1e-9, a.after_b1 + a.after_b3 * a.f0_hz * a.f0_hz), a.after_db, a.knee_s);
   printf("decay model: sigma(f) = %.4f + %.3e f^2  ->  T60 %.2f s at f0, %.2f s at 2 kHz\n", a.b1, a.b3,
          6.907755 / std::max(1e-9, a.b1 + a.b3 * a.f0_hz * a.f0_hz),
          6.907755 / std::max(1e-9, a.b1 + a.b3 * 4e6));

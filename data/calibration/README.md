@@ -7,6 +7,12 @@ back to hand-set presets.
 | File | Instrument | Source recordings | Licence |
 |---|---|---|---|
 | `harpsichord_english.cal` | GM programs 7-8 (harpsichord, clavinet) | VCSL "Harpsichord, English" (Zuckermann kit harpsichord), Normal stop, 28 sustained notes A#1-E6 | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
+| `piano_steinway_b.cal` | GM programs 1-4 (grands; honky-tonk = same with detuned unisons) | VCSL "Grand Piano, Steinway B", sustain pedal up, close mic, 42 notes A#0-G#7 x 3 velocity layers | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
+
+Piano specifics: string stiffness is fitted with Abel-Smith allpass dispersion filters (partials
+within ~1-3 cents of the recordings across the keyboard), every velocity layer has its own
+excitation (crossfaded by velocity), a second detuned string carries the aftersound, and the
+piano's own stretched tuning is reproduced.
 
 ## What is in a .cal file
 
@@ -21,6 +27,10 @@ The recordings are not in the repository (see `reference/`, git-ignored). To reb
 
 ```bash
 build\x64\Release\DSP_Render.exe calibrate reference\vcsl-harpsichord-english\sustain data\calibration\harpsichord_english.cal
+```
+
+```bash
+build\x64\Release\DSP_Render.exe calibrate reference\vcsl-piano-steinway-b\sustain data\calibration\piano_steinway_b.cal
 ```
 
 Check a note against its recording (prints partial levels / decay side by side, writes an A/B WAV):

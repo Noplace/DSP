@@ -26,14 +26,26 @@ namespace audio {
 namespace synth {
 namespace instruments {
 
-// A plucked string calibrated from recordings of a real instrument (commuted waveguide synthesis):
+// A plucked or struck string calibrated from recordings of a real instrument (commuted waveguide
+// synthesis):
 //  - string loop per note from measured inharmonicity and decay (smoothed across the keyboard)
-//  - excitation = the real pluck + soundboard response, recovered by inverse-filtering the
+//  - excitation = the real pluck/hammer + soundboard response, recovered by inverse-filtering the
 //    recording with that same loop, pitch-shifted to each note from the nearest recorded one
+//  - velocity layers (piano): the excitations of the two nearest layers are crossfaded, so tone and
+//    loudness follow the recordings (the channel's generic velocity curve is bypassed)
+//  - optional second, slightly detuned string with the measured aftersound decay (piano unisons)
+struct CalibratedStringOptions {
+  real_t release_t60_s = 0.15f;   // decay after key-up (dampers)
+  real_t level = 0.35f;           // output level for a typical note (loudest layer)
+  real_t detune_cents = 0.0f;     // second string detune when the calibration has an aftersound
+  real_t min_velocity_gain_db = -18.0f;  // velocities below the softest layer fade down to this
+  bool recorded_tuning = false;   // follow the instrument's own (e.g. stretched piano) tuning
+  int undamped_from_note = 128;   // notes from here up have no dampers (piano treble)
+};
+
 class CalibratedString : public InstrumentProcessor {
  public:
-  CalibratedString(std::shared_ptr<const StringCalibration> calibration, real_t release_t60_s = 0.15f,
-                   real_t level = 0.35f);
+  CalibratedString(std::shared_ptr<const StringCalibration> calibration, const CalibratedStringOptions& options);
   ~CalibratedString();
 
   int Load() override;
@@ -47,18 +59,27 @@ class CalibratedString : public InstrumentProcessor {
   bool IsVoiceActive(int v) const override { return voices_ && voices_[v].active; }
   real_t VoiceLevel(int v) const override { return voices_ ? voices_[v].level : 0; }
   void BendFrequency(real_t freq, int v) override;
+  bool HandlesVelocity() const override { return layered_; }
 
   // Smoothed parameters for a MIDI note (for tools/inspection).
   LoopParams NoteParams(int midi_note) const;
 
  private:
+  struct Layer {
+    float velocity;
+    std::vector<float> samples;   // at the synth's sample rate, transposed to the note
+  };
   struct Voice {
-    StringLoop loop;
-    const float* excitation;
-    int exc_len, exc_pos;
+    StringLoop loop, loop_b;      // loop_b: second string (aftersound), if used
+    const float* exc_lo;
+    const float* exc_hi;
+    int len_lo, len_hi, exc_pos;
+    float w_lo, w_hi;             // crossfade between the two layers (gain included)
+    float share_b;                // excitation share fed to the second string
+    bool two_strings;
     float dc_x1, dc_y1;
     float level;
-    float base_gain;      // held per-period loss gain (restored on retrigger)
+    float base_gain, base_gain_b;
     int note;
     real_t freq;
     bool active, released;
@@ -67,11 +88,14 @@ class CalibratedString : public InstrumentProcessor {
   void BuildTables();
 
   std::shared_ptr<const StringCalibration> cal_;
-  real_t release_t60_s_, level_;
+  CalibratedStringOptions options_;
   float gain_;                                 // normalises the recordings' level
-  LoopDesign designs_[128];
+  bool layered_;
+  LoopDesign designs_[128], designs_b_[128];
   LoopParams params_[128];
-  std::vector<float> excitations_[128];        // per MIDI note, at the synth's sample rate
+  float after_level_[128];
+  float tuning_ratio_[128];                    // recorded tuning vs equal temperament (or 1)
+  std::vector<Layer> layers_[128];             // per MIDI note, sorted by velocity
   Voice* voices_;
   float dc_coef_, level_decay_;
   InstrumentData* cdata_;
