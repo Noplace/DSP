@@ -62,7 +62,7 @@ class ClientMainWindow {
 
   // editing, recording, loop and markers (studio_edit.cpp)
   void NewSong();
-  void InstallEditedSong(dsp::audio::synth::SongInfo song);  // swap in, keeping the position
+  void InstallEditedSong(dsp::audio::synth::SongInfo song, bool mark_modified = true);  // swap in, keeping the position
   void CommitSong(dsp::audio::synth::SongInfo song);          // undoable edit
   void Undo();
   void Redo();
@@ -172,6 +172,40 @@ class ClientMainWindow {
   std::vector<float> spectrum_db_;     // per graph pixel column
   int spectrum_source_;
   float analyzer_fft_[4096];
+
+  // automation and MIDI learn (studio_automation.cpp)
+  bool SlotToParam(const std::atomic<float>* slot, int* strip, int* param) const;
+  std::string ParamLabel(int strip, int param) const;
+  int FindLane(int strip, int param) const;
+  void AddAutomationLane(int strip, int param);
+  void RemoveAutomationLane(int strip, int param);
+  void UpdateTouch();
+  void EndTouch();
+  void DrawParamMenu(const Rect& anchor);
+  void DrawAutomationRow(const Rect& head, const Rect& lane, int lane_index, double view_start_ms, double ms_per_px);
+  void RefreshMappedBits();
+  bool param_menu_open_ = false;
+  Rect param_menu_anchor_;
+  int menu_strip_ = 0, menu_param_ = 0;
+  bool touch_mode_ = false, touching_ = false;
+  int touch_strip_ = 0, touch_param_ = -1;
+  std::vector<std::pair<double, float>> touch_points_;
+  int lane_drag_ = -1, lane_drag_point_ = -1;  // automation point being dragged
+  std::vector<uint8_t> mapped_bits_;           // [strip + 1][param]: has a MIDI mapping
+
+  // on-screen keyboard and mixer view options
+  void DrawKeyboard(const Rect& r);
+  int kb_note_ = -1;           // key held with the mouse
+  bool mixer_used_only_ = false;
+  bool mixer_wide_ = false;
+  bool StripUsed(int ch) const;
+
+  // metering / convolution
+  dsp::audio::synth::effects::LoudnessStats loudness_stats_;
+  float mb_gr_db_[3] = {0, 0, 0};
+  std::string ir_path_;  // loaded impulse response file ("" = built-in preset)
+  void PromptLoadIr();
+  bool LoadIrFile(const std::string& path);
 
   // editing
   std::vector<dsp::audio::synth::SongInfo> undo_, redo_;

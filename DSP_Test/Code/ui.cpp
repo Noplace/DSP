@@ -37,6 +37,25 @@ void Ui::EndFrame() {
   in.pressed = in.released = in.dbl = in.rpressed = false;
   in.wheel = 0;
   if (!in.down) active = 0;  // a release we never saw (e.g. focus lost)
+  if (active == 0) active_slot = nullptr;
+}
+
+void Ui::DrawBadges(const Rect& r, const std::atomic<float>* v) {
+  if (!slot_flags) return;
+  const uint32_t f = slot_flags(v);
+  if (!f) return;
+  float bx = r.x + 2;
+  if (f & kFlagAutomated) {  // A: automated
+    g.FillRound(Rect(bx, r.y, 11, 11), 2, theme::kYellow);
+    g.Text("A", Rect(bx, r.y, 11, 11), Rgb(0x0d0f13), 8, Align::kCenter, true);
+    bx += 13;
+  }
+  if (f & (kFlagMapped | kFlagLearning)) {  // M: MIDI mapped (pulsing while learning)
+    Color c = theme::kAccent;
+    if (f & kFlagLearning) c.a = 0.45f + 0.55f * fabsf(sinf(GetTickCount64() * 0.006f));
+    g.FillRound(Rect(bx, r.y, 11, 11), 2, c);
+    g.Text("M", Rect(bx, r.y, 11, 11), Rgb(0x0d0f13), 8, Align::kCenter, true);
+  }
 }
 
 bool Ui::Press(WidgetId id, const Rect& r) {
@@ -115,8 +134,15 @@ bool Ui::DragValue(WidgetId id, const Rect& r, const ParamInfo& info, std::atomi
   const float value = v->load(std::memory_order_relaxed);
   bool changed = false;
   if (Over(id, r)) hot = id;
+  if (Over(id, r) && in.rpressed && active == 0) {  // right-click: context menu (window decides)
+    context_slot = v;
+    context_x = in.mx;
+    context_y = in.my;
+    in.rpressed = false;
+  }
   if (Over(id, r) && in.pressed && active == 0) {
     active = id;
+    active_slot = v;
     in.pressed = false;
     if (in.dbl) {
       v->store(info.def, std::memory_order_relaxed);
@@ -136,6 +162,7 @@ bool Ui::DragValue(WidgetId id, const Rect& r, const ParamInfo& info, std::atomi
   if (active == id && in.released) {
     active = 0;
     in.released = false;
+    active_slot = nullptr;
   }
   const float wheel = knob_wheel ? TakeWheel(r) : 0.0f;
   if (wheel != 0) {
@@ -198,6 +225,7 @@ bool Ui::Knob(const Rect& r, const ParamInfo& info, std::atomic<float>* v, Color
     snprintf(tip, sizeof(tip), "%s  %s", label && *label ? label : info.name, text);
     Tooltip(tip, cx, r.y);
   }
+  DrawBadges(Rect(r.x, r.y + label_h + 1, r.w, 12), v);  // under the label, beside the knob
   return changed;
 }
 
@@ -242,6 +270,7 @@ bool Ui::Fader(const Rect& r, const ParamInfo& info, std::atomic<float>* v, Colo
     snprintf(tip, sizeof(tip), "%s  %s", info.name, text);
     Tooltip(tip, r.cx(), ty - 8);
   }
+  DrawBadges(Rect(r.x - 2, r.y - 4, r.w + 4, 12), v);
   return changed;
 }
 

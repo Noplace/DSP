@@ -7,6 +7,7 @@
 #include <vector>
 #include "mixer.h"
 #include "biquad.h"
+#include "convolver.h"
 
 namespace dsp {
 namespace audio {
@@ -65,6 +66,12 @@ struct StripTable {
     for (int i = 0; i < kEqParamCount; ++i) info[kStripEq + i] = kEqInfo[i];
     for (int i = 0; i < kCompParamCount; ++i) info[kStripComp + i] = kStripCompInfo[i];
     info[kStripDynFirst] = {"Dyn first", 0, 1, 0, U::kSwitch, false};
+    info[kStripCompSidechain] = {"Key", -1, 15, -1, U::kChannel, false};
+    info[kStripGateOn] = {"Gate", 0, 1, 0, U::kSwitch, false};
+    info[kStripGateThreshold] = {"Thresh", -80, 0, -50, U::kDb, false};
+    info[kStripGateRange] = {"Range", 0, 80, 40, U::kDb, false};
+    info[kStripGateAttack] = {"Attack", 0.1f, 50, 1, U::kMs, true};
+    info[kStripGateRelease] = {"Release", 5, 1000, 100, U::kMs, true};
     info[kStripVolume] = {"Volume", -60, 12, 0, U::kFader, false};
     info[kStripPan] = {"Pan", -1, 1, 0, U::kPan, false};
     info[kStripMute] = {"Mute", 0, 1, 0, U::kSwitch, false};
@@ -84,6 +91,17 @@ struct MasterTable {
     info[kRevWidth] = {"Width", 0, 1, 1, U::kPercent, false};
     info[kRevPreDelay] = {"Pre-delay", 0, 200, 12, U::kMs, false};
     info[kRevReturn] = {"Return", 0, 1, 0.7f, U::kPercent, false};
+    info[kRevMode] = {"Convolution", 0, 1, 0, U::kSwitch, false};
+    info[kRevIr] = {"IR", 0, 3, 1, U::kChoice, false};
+    static const ParamInfo kMb[kMbParamCount] = {
+      {"Multiband", 0, 1, 0, U::kSwitch, false},
+      {"Low X", 40, 1000, 200, U::kHz, true}, {"High X", 1000, 10000, 3000, U::kHz, true},
+      {"Thresh", -40, 0, -18, U::kDb, false}, {"Ratio", 1, 10, 3, U::kRatio, true}, {"Gain", -12, 12, 0, U::kDb, false},
+      {"Thresh", -40, 0, -18, U::kDb, false}, {"Ratio", 1, 10, 3, U::kRatio, true}, {"Gain", -12, 12, 0, U::kDb, false},
+      {"Thresh", -40, 0, -18, U::kDb, false}, {"Ratio", 1, 10, 3, U::kRatio, true}, {"Gain", -12, 12, 0, U::kDb, false},
+      {"Attack", 0.5f, 100, 10, U::kMs, true}, {"Release", 10, 1000, 150, U::kMs, true},
+    };
+    for (int i = 0; i < kMbParamCount; ++i) info[kMasterMb + i] = kMb[i];
     info[kDlyTime] = {"Time", 20, 2000, 375, U::kMs, true};
     info[kDlyFeedback] = {"Feedback", 0, 0.95f, 0.35f, U::kPercent, false};
     info[kDlyDamp] = {"Tone", 500, 20000, 6000, U::kHz, true};
@@ -129,6 +147,9 @@ struct KeyTables {
     s[kStripLpfOn] = "lpf.on"; s[kStripLpfFreq] = "lpf.freq"; s[kStripLpfQ] = "lpf.q";
     s[kStripDriveOn] = "drive.on"; s[kStripDrive] = "drive.amount"; s[kStripDriveMix] = "drive.mix";
     s[kStripDynFirst] = "comp.before_eq";
+    s[kStripCompSidechain] = "comp.sidechain";
+    s[kStripGateOn] = "gate.on"; s[kStripGateThreshold] = "gate.threshold"; s[kStripGateRange] = "gate.range";
+    s[kStripGateAttack] = "gate.attack"; s[kStripGateRelease] = "gate.release";
     s[kStripVolume] = "volume"; s[kStripPan] = "pan"; s[kStripMute] = "mute"; s[kStripSolo] = "solo";
     s[kStripSendPre] = "send.prefader"; s[kStripSendReverb] = "send.reverb";
     s[kStripSendDelay] = "send.delay"; s[kStripSendChorus] = "send.chorus";
@@ -139,6 +160,11 @@ struct KeyTables {
     const char* m[kMasterParamCount] = {};
     m[kRevSize] = "reverb.size"; m[kRevDamp] = "reverb.damping"; m[kRevWidth] = "reverb.width";
     m[kRevPreDelay] = "reverb.predelay"; m[kRevReturn] = "reverb.return";
+    m[kRevMode] = "reverb.convolution"; m[kRevIr] = "reverb.ir";
+    static const char* kMbKeys[kMbParamCount] = {"mb.on", "mb.low_x", "mb.high_x", "mb.low.threshold", "mb.low.ratio",
+      "mb.low.gain", "mb.mid.threshold", "mb.mid.ratio", "mb.mid.gain", "mb.high.threshold", "mb.high.ratio",
+      "mb.high.gain", "mb.attack", "mb.release"};
+    for (int i = 0; i < kMbParamCount; ++i) m[kMasterMb + i] = kMbKeys[i];
     m[kDlyTime] = "delay.time"; m[kDlyFeedback] = "delay.feedback"; m[kDlyDamp] = "delay.tone";
     m[kDlyPingPong] = "delay.pingpong"; m[kDlyReturn] = "delay.return";
     m[kChoRate] = "chorus.rate"; m[kChoDepth] = "chorus.depth"; m[kChoReturn] = "chorus.return";
@@ -185,6 +211,8 @@ float ParamFromNormalized(const ParamInfo& info, float t) {
   }
   if (info.unit == ParamUnit::kSwitch)
     return t >= 0.5f ? info.max : info.min;
+  if (info.unit == ParamUnit::kChannel || info.unit == ParamUnit::kChoice)  // whole steps
+    return roundf(info.min + t * (info.max - info.min));
   if (info.log && info.min > 0)
     return info.min * powf(info.max / info.min, t);
   return info.min + t * (info.max - info.min);
@@ -220,6 +248,8 @@ void FormatParam(const ParamInfo& info, float v, char* out, size_t n) {
       return;
     }
     case ParamUnit::kSwitch: snprintf(out, n, v >= 0.5f ? "On" : "Off"); return;
+    case ParamUnit::kChannel: if (v < -0.5f) snprintf(out, n, "Self"); else snprintf(out, n, "Ch %d", int(lroundf(v)) + 1); return;
+    case ParamUnit::kChoice: snprintf(out, n, "%d", int(lroundf(v))); return;
     default: snprintf(out, n, "%.2f", v); return;
   }
 }
@@ -462,6 +492,154 @@ struct EqState {
   }
 };
 
+// Drive at 4x the sample rate, so the harmonics tanh adds above Nyquist are filtered out instead
+// of folding back down as aliasing. 65-tap linear-phase lowpass for both interpolation and
+// decimation; decimating on phase 0 makes the total delay exactly 16 samples at the base rate.
+struct Oversampler4x {
+  static const int kTaps = 65, kUp = 17;
+  static const int kDelay = 16;
+  static const float* Taps() {
+    static float h[kTaps];
+    static const bool built = [] {
+      const double fc = 0.45 / 4.0;  // cycles per sample at 4x: just under the base-rate Nyquist
+      double sum = 0;
+      for (int i = 0; i < kTaps; ++i) {
+        const double x = i - (kTaps - 1) / 2.0;
+        const double sinc = x == 0 ? 2 * fc : sin(2 * 3.14159265358979 * fc * x) / (3.14159265358979 * x);
+        const double w = 0.42 - 0.5 * cos(2 * 3.14159265358979 * i / (kTaps - 1)) + 0.08 * cos(4 * 3.14159265358979 * i / (kTaps - 1));
+        h[i] = float(sinc * w);
+        sum += h[i];
+      }
+      for (auto& v : h) v = float(v / sum);
+      return true;
+    }();
+    (void)built;
+    return h;
+  }
+  float up[kUp] = {};
+  float down[kTaps] = {};
+  int up_pos = 0, down_pos = 0;
+  void Reset() {
+    memset(up, 0, sizeof(up));
+    memset(down, 0, sizeof(down));
+  }
+  inline float Process(float x, float pre, float norm) {
+    const float* h = Taps();
+    up_pos = up_pos + 1 == kUp ? 0 : up_pos + 1;
+    up[up_pos] = x;
+    float out = 0;
+    for (int k = 0; k < 4; ++k) {
+      float y = 0;
+      int idx = up_pos;
+      for (int j = 0; 4 * j + k < kTaps; ++j) {
+        y += h[4 * j + k] * up[idx];
+        idx = idx ? idx - 1 : kUp - 1;
+      }
+      down_pos = down_pos + 1 == kTaps ? 0 : down_pos + 1;
+      down[down_pos] = tanhf(4.0f * y * pre) * norm;
+      if (k == 0) {
+        float acc = 0;
+        int d = down_pos;
+        for (int i = 0; i < kTaps; ++i) {
+          acc += h[i] * down[d];
+          d = d ? d - 1 : kTaps - 1;
+        }
+        out = acc;
+      }
+    }
+    return out;
+  }
+};
+
+// Noise gate / downward expander: closes (by `range` dB) when the level falls 4 dB under the
+// threshold, opens above it.
+struct NoiseGate {
+  float threshold = -50, range = 40, attack = 0, release = 0, detector_release = 0;
+  float env = 0, gain_db = 0;
+  bool open = true;
+  void Configure(float fs, float thr, float range_db, float attack_ms, float release_ms) {
+    threshold = thr;
+    range = range_db;
+    attack = expf(-1.0f / (std::max(0.05f, attack_ms) * 0.001f * fs));
+    release = expf(-1.0f / (std::max(1.0f, release_ms) * 0.001f * fs));
+    detector_release = expf(-1.0f / (0.015f * fs));
+  }
+  void Reset() {
+    env = 0;
+    gain_db = 0;
+    open = true;
+  }
+  inline float Gain(float level) {
+    env = level > env ? level : env * detector_release;
+    const float db = 20.0f * log10f(env + 1e-9f);
+    if (db > threshold) open = true;
+    else if (db < threshold - 4.0f) open = false;
+    const float target = open ? 0.0f : -range;
+    const float coef = target > gain_db ? attack : release;
+    gain_db = target + coef * (gain_db - target);
+    return DbToGain(gain_db);
+  }
+};
+
+// 3-band compressor. Linkwitz-Riley 4th-order crossovers; the low band goes through the second
+// crossover's allpass so that with the compressors idle the bands add back up flat.
+struct Multiband {
+  StereoBiquad lp1[2], hp1[2], lp2[2], hp2[2], ap_lp[2], ap_hp[2];
+  Compressor comp[3];
+  float gain[3] = {1, 1, 1};
+  float cache[kMbParamCount];
+  Multiband() { for (auto& c : cache) c = -1e9f; }
+  void Reset() {
+    for (int i = 0; i < 2; ++i) {
+      lp1[i].Reset(); hp1[i].Reset(); lp2[i].Reset(); hp2[i].Reset(); ap_lp[i].Reset(); ap_hp[i].Reset();
+    }
+    for (auto& c : comp) c.env_db = 0;
+  }
+  void Update(const float* p, float fs) {
+    if (p[kMbLowX] != cache[kMbLowX]) {
+      const auto lp = DesignBiquad(BiquadType::kLowPass, fs, p[kMbLowX], 0.7071, 0);
+      const auto hp = DesignBiquad(BiquadType::kHighPass, fs, p[kMbLowX], 0.7071, 0);
+      for (int i = 0; i < 2; ++i) { lp1[i].c = lp; hp1[i].c = hp; }
+    }
+    if (p[kMbHighX] != cache[kMbHighX]) {
+      const auto lp = DesignBiquad(BiquadType::kLowPass, fs, p[kMbHighX], 0.7071, 0);
+      const auto hp = DesignBiquad(BiquadType::kHighPass, fs, p[kMbHighX], 0.7071, 0);
+      for (int i = 0; i < 2; ++i) { lp2[i].c = ap_lp[i].c = lp; hp2[i].c = ap_hp[i].c = hp; }
+    }
+    bool changed = false;
+    for (int i = 0; i < kMbParamCount; ++i) changed |= p[i] != cache[i];
+    if (changed) {
+      for (int b = 0; b < 3; ++b) {
+        const float block[kCompParamCount] = {1, p[MbBandThresh(b)], p[MbBandRatio(b)], p[kMbAttack], p[kMbRelease], 6, 0};
+        comp[b].Configure(fs, block);
+        gain[b] = DbToGain(p[MbBandGain(b)]);
+      }
+    }
+    for (int i = 0; i < kMbParamCount; ++i) cache[i] = p[i];
+  }
+  inline void Process(float& l, float& r, float* gr) {
+    float lo_l = l, lo_r = r, rest_l = l, rest_r = r;
+    lp1[0].Process(lo_l, lo_r); lp1[1].Process(lo_l, lo_r);
+    hp1[0].Process(rest_l, rest_r); hp1[1].Process(rest_l, rest_r);
+    float mid_l = rest_l, mid_r = rest_r, hi_l = rest_l, hi_r = rest_r;
+    lp2[0].Process(mid_l, mid_r); lp2[1].Process(mid_l, mid_r);
+    hp2[0].Process(hi_l, hi_r); hp2[1].Process(hi_l, hi_r);
+    float a_l = lo_l, a_r = lo_r, b_l = lo_l, b_r = lo_r;  // allpass: LR4 low + high at the 2nd crossover
+    ap_lp[0].Process(a_l, a_r); ap_lp[1].Process(a_l, a_r);
+    ap_hp[0].Process(b_l, b_r); ap_hp[1].Process(b_l, b_r);
+    lo_l = a_l + b_l;
+    lo_r = a_r + b_r;
+    float* bands[3][2] = {{&lo_l, &lo_r}, {&mid_l, &mid_r}, {&hi_l, &hi_r}};
+    l = r = 0;
+    for (int b = 0; b < 3; ++b) {
+      const float g = comp[b].Gain(std::max(fabsf(*bands[b][0]), fabsf(*bands[b][1]))) * gain[b];
+      gr[b] = std::min(gr[b], comp[b].reduction_gain());
+      l += *bands[b][0] * g;
+      r += *bands[b][1] * g;
+    }
+  }
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -472,7 +650,7 @@ struct Mixer::StripState {
   bool primed = false;
   // Per-sub-block derived values; the previous block's values are ramped to the new ones.
   struct Derived {
-    float trim = 1, hpf = 0, hpf2 = 0, drive = 0, lpf = 0, eq = 0, comp = 0;
+    float trim = 1, hpf = 0, hpf2 = 0, drive = 0, lpf = 0, eq = 0, comp = 0, noise_gate = 0;
     float mute = 1, fader_l = 1, fader_r = 1, send_pre = 0, send[3] = {0, 0, 0};
   } d;
   StereoBiquad hpf[2], lpf;
@@ -480,23 +658,39 @@ struct Mixer::StripState {
   EqState eq;
   Compressor comp;
   float cache_comp[kCompParamCount];
+  NoiseGate noise_gate;
+  float cache_gate[4] = {-1e9f, -1e9f, -1e9f, -1e9f};
   float drive_pre = 1, drive_norm = 1, cache_drive = -1e9f;
+  Oversampler4x os[2];
+  float dry_delay[2][Oversampler4x::kDelay] = {};  // dry path, matched to the oversampler
+  int dry_pos = 0;
+  bool drive_latency = false;  // the strip runs 16 samples late (drive on, or until it goes quiet)
   float gate = 1;  // mute/solo
   uint32_t silent = 0;  // frames of silent input
   StripState() { for (auto& c : cache_comp) c = -1e9f; }
+  void ResetDrive() {
+    os[0].Reset();
+    os[1].Reset();
+    memset(dry_delay, 0, sizeof(dry_delay));
+    dry_pos = 0;
+  }
 };
 
 struct Mixer::MasterState {
   float sm[kMasterParamCount];
   bool primed = false;
   struct Derived {
-    float ret[3] = {0, 0, 0}, eq = 0, comp = 0, width = 1, gain = 1;
+    float ret[3] = {0, 0, 0}, eq = 0, mb = 0, comp = 0, width = 1, gain = 1, rev_mode = 0;
   } d;
   Reverb reverb;
+  Convolver conv;
+  std::vector<float> conv_pre;  // pre-delay for the convolution input
+  int conv_pre_pos = 0;
   StereoDelay delay;
   Chorus chorus;
   uint32_t silent[3] = {0, 0, 0};  // frames since the bus last carried signal
   EqState eq;
+  Multiband mb;
   Compressor comp;
   float cache_comp[kCompParamCount];
   MasterState() { for (auto& c : cache_comp) c = -1e9f; }
@@ -527,9 +721,11 @@ void Mixer::Initialize(uint32_t sample_rate, uint32_t max_frames) {
   master_->reverb.Init(sample_rate);
   master_->delay.Init(sample_rate);
   master_->chorus.Init(sample_rate);
+  master_->conv_pre.assign(size_t(sample_rate * 0.25) + 1, 0.0f);
   // Effects start idle: nothing has been sent to them yet.
   master_->silent[0] = master_->silent[1] = master_->silent[2] = 0xFFFFFFFFu;
   for (auto& b : bus_) b.assign(size_t(max_frames) * 2, 0.0f);
+  for (auto& k : key_) k.assign(size_t(max_frames) * 2, 0.0f);
 }
 
 void Mixer::Deinitialize() {
@@ -538,7 +734,31 @@ void Mixer::Deinitialize() {
   delete master_;
   master_ = nullptr;
   for (auto& b : bus_) { b.clear(); b.shrink_to_fit(); }
+  for (auto& k : key_) { k.clear(); k.shrink_to_fit(); }
+  // the audio thread is stopped by now
+  delete current_ir_;
+  current_ir_ = nullptr;
+  delete pending_ir_.exchange(nullptr);
+  delete retired_ir_.exchange(nullptr);
 }
+
+void Mixer::SetConvolutionIr(const std::vector<float>& left, const std::vector<float>& right, const std::string& name) {
+  CollectGarbage();
+  ConvolutionIr* ir = ConvolutionIr::Build(left, right, name);
+  ir_name_ = name;
+  ir_length_ = ir->length;
+  // If the audio thread never picked up the previous pending one, it is still ours to free.
+  delete pending_ir_.exchange(ir);
+}
+
+void Mixer::SetConvolutionPreset(int preset) {
+  if (!sample_rate_) return;
+  std::vector<float> l, r;
+  MakePresetIr(preset, sample_rate_, l, r);
+  SetConvolutionIr(l, r, PresetIrName(preset));
+}
+
+void Mixer::CollectGarbage() { delete retired_ir_.exchange(nullptr); }
 
 void Mixer::ResetStrip(int i) {
   for (int p = 0; p < kStripParamCount; ++p) strip_params_[i].set(p, StripParamInfo(p).def);
@@ -593,15 +813,29 @@ void Mixer::Process(float* const* strip_in, uint32_t frames, float* out) {
     const uint32_t n = std::min(frames - done, max_frames_);
     for (auto& b : bus_) memset(b.data(), 0, sizeof(float) * n * 2);
     const bool any_solo = AnySolo();
+    // Compressor sidechains listen to another channel's raw signal: copy those before the strips
+    // (which process their buffers in place) run.
+    int key_source[kStrips];
+    bool copied[kStrips] = {};
+    for (int s = 0; s < kStrips; ++s) {
+      const auto& p = strip_params_[s];
+      const int src = int(lroundf(p.get(kStripCompSidechain)));
+      key_source[s] = p.get(kStripComp + kCompOn) >= 0.5f && src >= 0 && src < kStrips && src != s ? src : -1;
+      if (key_source[s] >= 0 && !copied[src]) {
+        memcpy(key_[src].data(), strip_in[src] + done * 2, sizeof(float) * n * 2);
+        copied[src] = true;
+      }
+    }
     for (int s = 0; s < kStrips; ++s)
-      ProcessStrip(s, strip_in[s] + done * 2, n, out + done * 2, any_solo);
+      ProcessStrip(s, strip_in[s] + done * 2, n, out + done * 2, any_solo,
+                   key_source[s] >= 0 ? key_[key_source[s]].data() : nullptr);
     ProcessMaster(out + done * 2, n);
     done += n;
   }
   _mm_setcsr(csr);
 }
 
-void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo) {
+void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, const float* key) {
   StripState& st = strips_[index];
   const StripParams& p = strip_params_[index];
   const float fs = float(sample_rate_);
@@ -625,6 +859,7 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
     next.lpf = sm[kStripLpfOn];
     next.eq = sm[kStripEq + kEqOn];
     next.comp = sm[kStripComp + kCompOn];
+    next.noise_gate = sm[kStripGateOn];
     // Mute / solo gate, smoothed so switching never clicks.
     const float audible = p.get(kStripMute) < 0.5f && (!any_solo || p.get(kStripSolo) >= 0.5f) ? 1.0f : 0.0f;
     st.gate = first ? audible : st.gate + (audible - st.gate) * k;
@@ -673,9 +908,25 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
         if (sm[kStripComp + i] != st.cache_comp[i]) { st.cache_comp[i] = sm[kStripComp + i]; changed = true; }
       if (changed) st.comp.Configure(fs, sm + kStripComp);
     } else st.comp.env_db = 0;
+    const bool gate_on = next.noise_gate > 0 || prev.noise_gate > 0;
+    if (gate_on) {
+      const float g[4] = {sm[kStripGateThreshold], sm[kStripGateRange], sm[kStripGateAttack], sm[kStripGateRelease]};
+      if (g[0] != st.cache_gate[0] || g[1] != st.cache_gate[1] || g[2] != st.cache_gate[2] || g[3] != st.cache_gate[3]) {
+        st.noise_gate.Configure(fs, g[0], g[1], g[2], g[3]);
+        memcpy(st.cache_gate, g, sizeof(g));
+      }
+    } else st.noise_gate.Reset();
     const bool dyn_first = sm[kStripDynFirst] >= 0.5f;
     const bool hpf_on = next.hpf > 0 || prev.hpf > 0, hpf2_on = next.hpf2 > 0 || prev.hpf2 > 0;
     const bool lpf_on = next.lpf > 0 || prev.lpf > 0, drive_on = next.drive > 0 || prev.drive > 0;
+    // The oversampled drive delays the strip by 16 samples. Once drive has been on, the strip
+    // keeps that latency (dry path delayed to match) until its input goes quiet, so switching
+    // drive off doesn't jump the signal in time.
+    if (drive_on && !st.drive_latency) {
+      st.ResetDrive();
+      st.drive_latency = true;
+    }
+    const bool drive_path = st.drive_latency;
     float min_gr = 1.0f;
 
     // Silent input: once the filters have rung out (or with nothing stateful switched on) the
@@ -684,12 +935,15 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
     float level = 0;
     for (uint32_t i = 0; i < n * 2; ++i) level = std::max(level, fabsf(io[2 * off + i]));
     if (level == 0.0f) {
-      const bool stateful = hpf_on || lpf_on || drive_on || eq_on || comp_on;
+      const bool stateful = hpf_on || lpf_on || drive_path || eq_on || comp_on || gate_on;
       if (st.silent < 0xFFFFFFFFu - n) st.silent += n;
       if (!stateful || st.silent > uint32_t(fs * 0.5f)) {
         if (stateful) {
           st.hpf[0].Reset(); st.hpf[1].Reset(); st.lpf.Reset(); st.eq.Reset();
           st.comp.env_db = 0;
+          st.noise_gate.Reset();
+          st.ResetDrive();
+          st.drive_latency = drive_on;  // quiet: safe to drop the latency now
         }
         continue;
       }
@@ -721,10 +975,21 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
         l += (hl - l) * m;
         r += (hr - r) * m;
       }
-      if (drive_on) {
-        const float m = Lerp(prev.drive, next.drive, t);
-        l += (Saturate(l, st.drive_pre, st.drive_norm) - l) * m;
-        r += (Saturate(r, st.drive_pre, st.drive_norm) - r) * m;
+      if (drive_path) {
+        const float dl = st.dry_delay[0][st.dry_pos], dr = st.dry_delay[1][st.dry_pos];
+        st.dry_delay[0][st.dry_pos] = l;
+        st.dry_delay[1][st.dry_pos] = r;
+        if (++st.dry_pos == Oversampler4x::kDelay) st.dry_pos = 0;
+        if (drive_on) {
+          const float m = Lerp(prev.drive, next.drive, t);
+          const float wl = st.os[0].Process(l, st.drive_pre, st.drive_norm);
+          const float wr = st.os[1].Process(r, st.drive_pre, st.drive_norm);
+          l = dl + (wl - dl) * m;
+          r = dr + (wr - dr) * m;
+        } else {
+          l = dl;
+          r = dr;
+        }
       }
       if (lpf_on) {
         const float m = Lerp(prev.lpf, next.lpf, t);
@@ -738,9 +1003,19 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
       for (int stage = 0; stage < 2; ++stage) {
         const bool do_comp = (stage == 0) == dyn_first;
         if (do_comp) {
+          if (gate_on) {  // gate first, then the compressor
+            const float m = Lerp(prev.noise_gate, next.noise_gate, t);
+            const float g = st.noise_gate.Gain(std::max(fabsf(l), fabsf(r)));
+            l += (l * g - l) * m;
+            r += (r * g - r) * m;
+            min_gr = std::min(min_gr, 1.0f + (g - 1.0f) * m);
+          }
           if (comp_on) {
             const float m = Lerp(prev.comp, next.comp, t);
-            const float g = st.comp.Gain(std::max(fabsf(l), fabsf(r)));
+            // detector: this strip, or the sidechain channel's raw signal (ducking)
+            const float level = key ? std::max(fabsf(key[2 * (off + i)]), fabsf(key[2 * (off + i) + 1]))
+                                    : std::max(fabsf(l), fabsf(r));
+            const float g = st.comp.Gain(level);
             l += (l * g - l) * m;
             r += (r * g - r) * m;
             min_gr = std::min(min_gr, st.comp.reduction_gain());
@@ -788,8 +1063,19 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
   const float fs = float(sample_rate_);
   const float k = 1.0f - expf(-float(kSubBlock) / (fs * 0.005f));
   const float* bus[3] = {bus_[0].data(), bus_[1].data(), bus_[2].data()};
-  const uint32_t kIdleAfter[3] = {uint32_t(fs * 12), uint32_t(fs * 30), uint32_t(fs * 0.1f)};
+  // A new impulse response from the UI: take it (the old one goes back to the UI to free, so
+  // nothing is freed here). Wait until the UI has collected the previous one.
+  if (retired_ir_.load(std::memory_order_acquire) == nullptr) {
+    if (ConvolutionIr* ir = pending_ir_.exchange(nullptr, std::memory_order_acq_rel)) {
+      retired_ir_.store(current_ir_, std::memory_order_release);
+      current_ir_ = ir;
+      st.conv.SetIr(ir);
+    }
+  }
+  const uint32_t ir_tail = current_ir_ ? uint32_t(current_ir_->length + fs) : 0;
+  const uint32_t kIdleAfter[3] = {std::max(uint32_t(fs * 12), ir_tail), uint32_t(fs * 30), uint32_t(fs * 0.1f)};
   float peak_l = 0, peak_r = 0;
+  float mb_gr[3] = {1, 1, 1};
 
   for (uint32_t off = 0; off < frames; off += kSubBlock) {
     const uint32_t n = std::min<uint32_t>(kSubBlock, frames - off);
@@ -803,9 +1089,11 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
     next.ret[1] = sm[kDlyReturn];
     next.ret[2] = sm[kChoReturn];
     next.eq = sm[kMasterEq + kEqOn];
+    next.mb = sm[kMasterMb + kMbOn];
     next.comp = sm[kMasterComp + kCompOn];
     next.width = sm[kMasterWidth];
     next.gain = DbToGain(sm[kMasterGain]);
+    next.rev_mode = sm[kRevMode];
     if (first) prev = next;
     st.d = next;
 
@@ -828,6 +1116,8 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
 
     const bool eq_on = next.eq > 0 || prev.eq > 0;
     if (eq_on) st.eq.Update(sm + kMasterEq, fs); else st.eq.Reset();
+    const bool mb_on = next.mb > 0 || prev.mb > 0;
+    if (mb_on) st.mb.Update(sm + kMasterMb, fs); else st.mb.Reset();
     const bool comp_on = next.comp > 0 || prev.comp > 0;
     if (comp_on) {
       bool changed = false;
@@ -835,6 +1125,10 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
         if (sm[kMasterComp + i] != st.cache_comp[i]) { st.cache_comp[i] = sm[kMasterComp + i]; changed = true; }
       if (changed) st.comp.Configure(fs, sm + kMasterComp);
     } else st.comp.env_db = 0;
+    // reverb engine: algorithmic, convolution, or a crossfade while switching
+    const bool algo_on = prev.rev_mode < 1.0f || next.rev_mode < 1.0f;
+    const bool conv_on = (prev.rev_mode > 0.0f || next.rev_mode > 0.0f) && st.conv.ir() != nullptr;
+    const int conv_pre_n = int(st.conv_pre.size());
     float min_gr = 1.0f;
 
     const float inv = 1.0f / n;
@@ -844,10 +1138,26 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
       float l = out[j], r = out[j + 1];
       float wl, wr;
       if (run[0]) {
-        st.reverb.Tick(bus[0][j], bus[0][j + 1], pre_delay, rev_fb, rev_damp, rev_width, wl, wr);
+        const float mode = Lerp(prev.rev_mode, next.rev_mode, t);
+        float rl = 0, rr = 0;
+        if (algo_on) {
+          st.reverb.Tick(bus[0][j], bus[0][j + 1], pre_delay, rev_fb, rev_damp, rev_width, wl, wr);
+          rl += wl * (1.0f - mode);
+          rr += wr * (1.0f - mode);
+        }
+        if (conv_on) {
+          st.conv_pre[st.conv_pre_pos] = (bus[0][j] + bus[0][j + 1]) * 0.5f;
+          int rd = st.conv_pre_pos - pre_delay;
+          if (rd < 0) rd += conv_pre_n;
+          if (++st.conv_pre_pos >= conv_pre_n) st.conv_pre_pos = 0;
+          st.conv.Tick(st.conv_pre[rd], wl, wr);
+          const float mid = (wl + wr) * 0.5f, side = (wl - wr) * 0.5f * rev_width;
+          rl += (mid + side) * mode;
+          rr += (mid - side) * mode;
+        }
         const float g = Lerp(prev.ret[0], next.ret[0], t);
-        l += wl * g;
-        r += wr * g;
+        l += rl * g;
+        r += rr * g;
       }
       if (run[1]) {
         st.delay.Tick(bus[1][j], bus[1][j + 1], dly_samples, dly_fb, dly_damp, ping_pong, wl, wr);
@@ -867,6 +1177,13 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
         st.eq.Process(el, er);
         l += (el - l) * m;
         r += (er - r) * m;
+      }
+      if (mb_on) {
+        const float m = Lerp(prev.mb, next.mb, t);
+        float ml = l, mr = r;
+        st.mb.Process(ml, mr, mb_gr);
+        l += (ml - l) * m;
+        r += (mr - r) * m;
       }
       if (comp_on) {
         const float m = Lerp(prev.comp, next.comp, t);
@@ -892,6 +1209,10 @@ void Mixer::ProcessMaster(float* out, uint32_t frames) {
     if (min_gr < 1.0f) master_meter_.Publish(0, 0, min_gr);
   }
   master_meter_.Publish(peak_l, peak_r, 1.0f);
+  for (int b = 0; b < 3; ++b) {
+    float cur = mb_gr_[b].load(std::memory_order_relaxed);
+    while (mb_gr[b] < cur && !mb_gr_[b].compare_exchange_weak(cur, mb_gr[b], std::memory_order_relaxed)) {}
+  }
   if (analyzer_source() < 0)
     WriteScope(out, frames);
 }

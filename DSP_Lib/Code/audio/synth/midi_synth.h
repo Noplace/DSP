@@ -51,6 +51,7 @@ class MidiSynth : public Synth {
     memset(&channels,0,sizeof(channels));
     memset(&aux_effects,0,sizeof(aux_effects));
     memset(&main_effects,0,sizeof(main_effects));
+    for (auto& row : cc_map_) for (auto& m : row) m.store(-1, std::memory_order_relaxed);
   }
   ~MidiSynth() {
     Deinitialize();
@@ -142,6 +143,36 @@ class MidiSynth : public Synth {
   bool counting_in() const { return count_in_frames_.load() > 0 || count_in_request_ms_.load() > 0; }
   // Keep the transport running past the last event (while recording).
   void set_hold_at_end(bool hold) { hold_at_end_ = hold; }
+
+  // Notes currently held on each channel (key down; any thread). Bit n of the result = channel n.
+  uint16_t channels_holding(int note) const {
+    uint16_t mask = 0;
+    for (int ch = 0; ch < 16; ++ch)
+      if ((held_[ch][(note >> 6) & 1].load(std::memory_order_relaxed) >> (note & 63)) & 1) mask |= uint16_t(1 << ch);
+    return mask;
+  }
+
+  // Automation: the parameter being dragged in the UI is left alone (strip -1 = master;
+  // param -1 = none).
+  void set_touched_param(int strip, int param) {
+    touched_param_ = param < 0 ? -1 : (strip + 1) * 1024 + param;
+  }
+  // Automation value of a lane at a song position.
+  static float AutomationValue(const AutomationLane& lane, double ms);
+
+  // MIDI learn: the next controller (CC) from live input is bound to the parameter; mapped CCs
+  // then drive their parameter (over its whole range) and no longer reach the channel.
+  void StartMidiLearn(int strip, int param) { learn_target_ = (strip + 1) * 1024 + param; }
+  void CancelMidiLearn() { learn_target_ = -1; }
+  bool midi_learning(int strip, int param) const { return learn_target_.load() == (strip + 1) * 1024 + param; }
+  int TakeLearned() { return learned_.exchange(-1); }  // (channel << 8) | cc, or -1
+  // (channel << 8) | cc bound to the parameter, or -1.
+  int MidiMappingFor(int strip, int param) const;
+  void SetMidiMapping(int channel, int cc, int strip, int param);  // param -1 = unbind the CC
+  void ClearMidiMapping(int strip, int param);
+  bool cc_mapped(int channel, int cc) const { return cc_map_[channel & 15][cc & 127].load() >= 0; }
+  // target as strip/param for a mapped CC (false if none)
+  bool MappedTarget(int channel, int cc, int* strip, int* param) const;
   // Track mute/solo (file tracks 0..63): muted tracks start no new notes. Any thread.
   void set_track_muted(int track, bool muted) { SetTrackBit(track_mute_mask_, track, muted); }
   void set_track_solo(int track, bool solo) { SetTrackBit(track_solo_mask_, track, solo); }
@@ -201,6 +232,16 @@ class MidiSynth : public Synth {
   std::atomic<double> count_in_request_ms_{0}, count_in_beat_ms_{500};
   std::atomic<uint32_t> count_in_frames_{0};
   std::vector<Track> track_store_;
+  void ApplyAutomation(double ms);
+  std::atomic<int> touched_param_{-1}, learn_target_{-1}, learned_{-1};
+  std::atomic<int> cc_map_[16][128];  // encoded target or -1
+  std::atomic<uint64_t> held_[16][2] = {};  // notes down per channel (for the UI keyboard)
+  void SetHeld(int ch, int note, bool on) {
+    auto& word = held_[ch & 15][(note >> 6) & 1];
+    const uint64_t bit = uint64_t(1) << (note & 63);
+    if (on) word.fetch_or(bit, std::memory_order_relaxed);
+    else word.fetch_and(~bit, std::memory_order_relaxed);
+  }
   void ResetChannelsToDefaults();
   void ApplyChannelProgram(int channel);  // file program + overrides -> channel instrument
   void ApplyOverridesIfChanged();

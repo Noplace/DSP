@@ -16,6 +16,7 @@ void ExportSettings::CaptureFrom(MidiSynth& synth) {
     track_solo[t] = synth.track_solo(t);
   }
   song = synth.song();
+  ir_path.clear();  // set by the caller when a file IR is loaded
 }
 
 bool Exporter::Start(const ExportSettings& settings) {
@@ -120,6 +121,16 @@ void Exporter::Run(ExportSettings s) {
     for (int id = 0; id < kStripParamCount; ++id) synth.mixer.strip(st).set(id, s.strip[st][id]);
   for (int id = 0; id < kMasterParamCount; ++id) synth.mixer.master().set(id, s.master[id]);
   synth.mixer.set_follow_midi_sends(s.follow_midi_sends);
+  {  // same convolution impulse response as the live mixer
+    const int ir = int(lroundf(s.master[kRevIr]));
+    std::vector<float> l, r;
+    if (ir == 3 && !s.ir_path.empty() && ReadImpulseResponse(s.ir_path.c_str(), s.sample_rate, 8.0, l, r, nullptr)) {
+      const size_t slash = s.ir_path.find_last_of("\\/");
+      synth.mixer.SetConvolutionIr(l, r, slash == std::string::npos ? s.ir_path : s.ir_path.substr(slash + 1));
+    } else {
+      synth.mixer.SetConvolutionPreset(ir % 3);
+    }
+  }
   synth.InstallSong(MidiSynth::PrepareSong(s.song), -1.0);  // the song as edited, not the file
   host.stopped = false;  // installing stops the (offline) transport
   const double length_ms = host.song_length_ms;
@@ -135,6 +146,14 @@ void Exporter::Run(ExportSettings s) {
   state_ = kRendering;
 
   MasterLimiter limiter;
+  LoudnessMeter loudness;  // integrated loudness of what gets written
+  LoudnessStats stats;
+  loudness.Configure(s.sample_rate);
+  auto measure = [&](const float* b, uint32_t n) {
+    loudness.Process(b, n);
+    LoudnessBlock lb;
+    while (loudness.Pop(lb)) stats.Add(lb);
+  };
   limiter.Configure(s.sample_rate);
   const uint32_t kBlock = 512;
   float block[kBlock * 2];
@@ -144,6 +163,7 @@ void Exporter::Run(ExportSettings s) {
   while (!host.stopped && !cancel_ && frames < max_frames) {
     synth.RenderSamplesStereo(kBlock, block);
     limiter.Process(block, kBlock);
+    measure(block, kBlock);
     for (float v : block) peak = std::max(peak, fabsf(v));
     wav.Write(block, kBlock);
     frames += kBlock;
@@ -155,6 +175,7 @@ void Exporter::Run(ExportSettings s) {
   for (uint64_t tail = 0; !cancel_ && tail < uint64_t(20) * s.sample_rate && quiet < s.sample_rate / 2; tail += kBlock) {
     synth.RenderIdleStereo(kBlock, block);
     limiter.Process(block, kBlock);
+    measure(block, kBlock);
     float block_peak = 0;
     for (float v : block) block_peak = std::max(block_peak, fabsf(v));
     peak = std::max(peak, block_peak);
@@ -174,8 +195,8 @@ void Exporter::Run(ExportSettings s) {
     if (*c == '\\' || *c == '/') name = c + 1;
   const int secs = int(frames / s.sample_rate);
   char text[512];
-  snprintf(text, sizeof(text), "Exported %s  \xC2\xB7  %d:%02d  \xC2\xB7  peak %.1f dBFS", name, secs / 60, secs % 60,
-           20.0f * log10f(std::max(peak, 1e-6f)));
+  snprintf(text, sizeof(text), "Exported %s  \xC2\xB7  %d:%02d  \xC2\xB7  %.1f LUFS integrated  \xC2\xB7  peak %.1f dBFS", name,
+           secs / 60, secs % 60, stats.integrated(), 20.0f * log10f(std::max(peak, 1e-6f)));
   progress_ = 1.0f;
   finish(kDone, text);
 }

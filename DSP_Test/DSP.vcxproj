@@ -90,6 +90,7 @@
     <ClCompile Include="Code\piano_roll.cpp" />
     <ClCompile Include="Code\session.cpp" />
     <ClCompile Include="Code\splash.cpp" />
+    <ClCompile Include="Code\studio_automation.cpp" />
     <ClCompile Include="Code\studio_edit.cpp" />
     <ClCompile Include="Code\studio_files.cpp" />
     <ClCompile Include="Code\studio_views.cpp" />

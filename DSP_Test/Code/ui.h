@@ -5,6 +5,7 @@
 // write straight into the parameter's atomic slot.
 
 #include <atomic>
+#include <functional>
 #include <string>
 
 namespace demo {
@@ -46,6 +47,13 @@ class Ui {
   WidgetId active = 0;  // widget being dragged / pressed
   WidgetId hot = 0;     // widget under the mouse this frame
   bool knob_wheel = true;  // knobs/faders react to the wheel (off while a panel is being scrolled)
+  // Parameter widgets: the one being dragged, the one right-clicked this frame (for a context
+  // menu), and per-parameter badges (kFlag* bits) drawn on knobs and faders.
+  std::atomic<float>* active_slot = nullptr;
+  std::atomic<float>* context_slot = nullptr;
+  float context_x = 0, context_y = 0;
+  enum { kFlagAutomated = 1, kFlagMapped = 2, kFlagLearning = 4 };
+  std::function<uint32_t(const std::atomic<float>*)> slot_flags;
 
   void BeginFrame();
   void EndFrame();  // draws the tooltip, clears per-frame input
@@ -87,6 +95,7 @@ class Ui {
  private:
   bool DragValue(WidgetId id, const Rect& r, const dsp::audio::synth::effects::ParamInfo& info,
                  std::atomic<float>* v, float pixels_per_range);
+  void DrawBadges(const Rect& r, const std::atomic<float>* v);
   float drag_y0_ = 0, drag_t0_ = 0;
   Rect clip_;
   bool clipped_ = false;

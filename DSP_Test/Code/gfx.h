@@ -3,7 +3,9 @@
 // Thin Direct2D / DirectWrite wrapper for the studio UI. All coordinates are in DIPs
 // (1/96 inch); the render target is created at the window's DPI.
 
-#include <d2d1.h>
+#include <d2d1_1.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
 #include <dwrite.h>
 #include <map>
 #include <string>
@@ -76,9 +78,21 @@ class Gfx {
   static D2D1_RECT_F ToD2D(const Rect& r) { return D2D1::RectF(r.x, r.y, r.r(), r.b()); }
 
   HWND hwnd_ = nullptr;
-  ID2D1Factory* factory_ = nullptr;
+  bool CreateDeviceTarget();     // Direct3D 11 device + flip-model swap chain (preferred)
+  bool CreateHwndTarget();       // classic HWND render target (fallback)
+  void CreateBackbufferBitmap();
+  ID2D1Factory1* factory_ = nullptr;
+  ID3D11Device* d3d_ = nullptr;
+  ID2D1Device* d2d_device_ = nullptr;
+  ID2D1DeviceContext* dc_ = nullptr;
+  IDXGISwapChain1* swap_ = nullptr;
+  ID2D1Bitmap1* backbuffer_ = nullptr;
+  ID2D1HwndRenderTarget* hwnd_target_ = nullptr;
+ public:
+  bool using_gpu_swapchain() const { return swap_ != nullptr; }
+ private:
   IDWriteFactory* dwrite_ = nullptr;
-  ID2D1HwndRenderTarget* target_ = nullptr;
+  ID2D1RenderTarget* target_ = nullptr;  // dc_ or hwnd_target_
   ID2D1SolidColorBrush* brush_ = nullptr;
   struct CachedLayout {
     IDWriteTextLayout* layout;

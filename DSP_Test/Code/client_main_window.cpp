@@ -193,6 +193,19 @@ void ClientMainWindow::Start() {
   }
   // In the studio, files get the reverb/chorus they ask for (CC91/CC93) unless switched off.
   midi_synth_->mixer.set_follow_midi_sends(true);
+  // Badges on knobs/faders: automated (has a lane), MIDI mapped, being learned.
+  ui_.slot_flags = [this](const std::atomic<float>* slot) -> uint32_t {
+    int strip, param;
+    if (!SlotToParam(slot, &strip, &param)) return 0;
+    uint32_t flags = 0;
+    if (FindLane(strip, param) >= 0) flags |= Ui::kFlagAutomated;
+    const size_t bit = size_t(strip + 1) * 128 + param;
+    if (param < 128 && bit < mapped_bits_.size() && mapped_bits_[bit]) flags |= Ui::kFlagMapped;
+    if (midi_synth_->midi_learning(strip, param)) flags |= Ui::kFlagLearning;
+    return flags;
+  };
+  // Impulse response ready for the convolution reverb (used once switched to convolution).
+  midi_synth_->mixer.SetConvolutionPreset(int(lroundf(midi_synth_->mixer.master().get(dsp::audio::synth::effects::kRevIr))) % 3);
   RescanMidiInputs();
 
   SetInitialSize();
@@ -279,7 +292,8 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
   } else if (key == VK_SPACE) {
     if (!repeat) synth_player_->TogglePause();
   } else if (key == VK_ESCAPE) {
-    if (picker_open_ || export_menu_open_) picker_open_ = export_menu_open_ = false;
+    if (picker_open_ || export_menu_open_ || param_menu_open_) picker_open_ = export_menu_open_ = param_menu_open_ = false;
+    else if (midi_synth_->midi_learning(menu_strip_, menu_param_)) { midi_synth_->CancelMidiLearn(); ShowMessage("MIDI learn cancelled"); }
     else synth_player_->Stop();
   } else if (key == VK_HOME) {
     Seek(0);
@@ -441,6 +455,27 @@ void ClientMainWindow::OnTimer() {
     active = active || m.hold[0] > -89.0f || m.hold[1] > -89.0f || m.gr_db < -0.05f;
   PollExport();
   PollRecording();
+  {
+    dsp::audio::synth::effects::LoudnessBlock block;
+    while (synth_player_ && synth_player_->PopLoudness(block)) loudness_stats_.Add(block);
+    auto& mixer = midi_synth_->mixer;
+    for (int b = 0; b < 3; ++b) {
+      const float gr = mixer.TakeMultibandGainReduction(b);
+      const float db = gr < 1.0f ? 20.0f * log10f(std::max(gr, 1e-4f)) : 0.0f;
+      mb_gr_db_[b] = std::min(db, mb_gr_db_[b] + 18.0f * dt);
+    }
+    mixer.CollectGarbage();  // impulse responses the audio thread let go of
+    const int learned = midi_synth_->TakeLearned();
+    if (learned >= 0) {
+      int strip, param;
+      if (midi_synth_->MappedTarget(learned >> 8, learned & 0xFF, &strip, &param)) {
+        char text[200];
+        snprintf(text, sizeof(text), "Mapped CC %d (MIDI channel %d) to %s", learned & 0xFF, (learned >> 8) + 1,
+                 ParamLabel(strip, param).c_str());
+        ShowMessage(text);
+      }
+    }
+  }
   active = active || exporter_.busy() || recording_ || midi_synth_->counting_in() ||
            (!message_.empty() && now < message_until_ + 0.1);
   if (!message_.empty() && now > message_until_) message_.clear();
@@ -465,22 +500,33 @@ void ClientMainWindow::Render() {
   const float left_w = W - ins_w;
   // the piano roll gets a bit more height than the track view
   const float mixer_h = editor_track_ >= 0 ? std::clamp(body_h * 0.36f, 250.0f, 360.0f) : std::clamp(body_h * 0.42f, 290.0f, 380.0f);
+  const float kb_h = 46;  // on-screen keyboard under the mixer
 
   if (synth_player_ != nullptr && midi_synth_ != nullptr) {
-    const bool popup = picker_open_ || export_menu_open_;
+    RefreshMappedBits();
+    const bool popup = picker_open_ || export_menu_open_ || param_menu_open_;
     ui_.SetModal(popup);  // the panels below are inert while a popup is up
     DrawTopBar(Rect(0, 0, W, top_h));
-    if (editor_track_ >= 0) DrawPianoRoll(Rect(0, body_y, left_w, body_h - mixer_h));
-    if (editor_track_ < 0) DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h));
-    DrawMixer(Rect(0, body_y + body_h - mixer_h, left_w, mixer_h));
+    if (editor_track_ >= 0) DrawPianoRoll(Rect(0, body_y, left_w, body_h - mixer_h - kb_h));
+    if (editor_track_ < 0) DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h - kb_h));
+    DrawMixer(Rect(0, body_y + body_h - mixer_h - kb_h, left_w, mixer_h));
+    DrawKeyboard(Rect(0, body_y + body_h - kb_h, left_w, kb_h));
     DrawInspector(Rect(left_w, body_y, ins_w, body_h));
     if (popup) {
       ui_.SetModal(true);
       ui_.BeginModal();
       if (picker_open_) DrawInstrumentPicker(picker_anchor_);
       if (export_menu_open_) DrawExportMenu(export_menu_anchor_);
+      if (param_menu_open_) DrawParamMenu(param_menu_anchor_);
       ui_.EndModal();
+    } else if (ui_.context_slot) {  // a knob or fader was right-clicked: open its menu
+      if (SlotToParam(ui_.context_slot, &menu_strip_, &menu_param_)) {
+        param_menu_open_ = true;
+        param_menu_anchor_ = Rect(ui_.context_x, ui_.context_y, 0, 0);
+      }
     }
+    ui_.context_slot = nullptr;
+    UpdateTouch();
     ui_.SetModal(false);
     DrawStatusBar(Rect(0, H - status_h, W, status_h));
   }

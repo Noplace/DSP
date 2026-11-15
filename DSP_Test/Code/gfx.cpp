@@ -2,6 +2,8 @@
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace demo {
 
@@ -15,7 +17,8 @@ static void SafeRelease(T** p) {
 
 bool Gfx::Create(HWND hwnd) {
   hwnd_ = hwnd;
-  if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_)))
+  if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory1), nullptr,
+                               reinterpret_cast<void**>(&factory_))))
     return false;
   if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                  reinterpret_cast<IUnknown**>(&dwrite_))))
@@ -35,7 +38,14 @@ void Gfx::Destroy() {
 
 void Gfx::DiscardTarget() {
   SafeRelease(&brush_);
-  SafeRelease(&target_);
+  if (dc_) dc_->SetTarget(nullptr);
+  SafeRelease(&backbuffer_);
+  SafeRelease(&swap_);
+  SafeRelease(&dc_);
+  SafeRelease(&d2d_device_);
+  SafeRelease(&d3d_);
+  SafeRelease(&hwnd_target_);
+  target_ = nullptr;  // not owned: it is dc_ or hwnd_target_
 }
 
 void Gfx::SetDpi(float dpi) {
@@ -44,28 +54,109 @@ void Gfx::SetDpi(float dpi) {
   Resize();
 }
 
+void Gfx::CreateBackbufferBitmap() {
+  IDXGISurface* surface = nullptr;
+  if (FAILED(swap_->GetBuffer(0, IID_PPV_ARGS(&surface)))) return;
+  const auto props = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                                             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+                                             dpi_, dpi_);
+  dc_->CreateBitmapFromDxgiSurface(surface, &props, &backbuffer_);
+  surface->Release();
+  dc_->SetTarget(backbuffer_);
+}
+
 void Gfx::Resize() {
   RECT rc;
   GetClientRect(hwnd_, &rc);
-  if (target_) target_->Resize(D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top));
+  const UINT w = std::max<LONG>(1, rc.right - rc.left), h = std::max<LONG>(1, rc.bottom - rc.top);
+  if (swap_) {
+    dc_->SetTarget(nullptr);
+    SafeRelease(&backbuffer_);
+    if (FAILED(swap_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) {
+      DiscardTarget();  // rebuilt on the next frame
+    } else {
+      CreateBackbufferBitmap();
+    }
+  } else if (hwnd_target_) {
+    hwnd_target_->Resize(D2D1::SizeU(w, h));
+  }
   width_ = (rc.right - rc.left) / scale();
   height_ = (rc.bottom - rc.top) / scale();
 }
 
-bool Gfx::BeginFrame() {
-  if (!target_) {
+// Direct2D on a Direct3D 11 device presenting through a flip-model swap chain: the GPU does the
+// rasterising and composition, which takes a good part of the per-frame CPU cost off the UI
+// thread compared with the HWND render target.
+bool Gfx::CreateDeviceTarget() {
+  const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
+                                      D3D_FEATURE_LEVEL_10_0};
+  if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                               UINT(std::size(levels)), D3D11_SDK_VERSION, &d3d_, nullptr, nullptr)))
+    return false;
+  IDXGIDevice* dxgi = nullptr;
+  IDXGIAdapter* adapter = nullptr;
+  IDXGIFactory2* dxgi_factory = nullptr;
+  bool ok = SUCCEEDED(d3d_->QueryInterface(IID_PPV_ARGS(&dxgi))) &&
+            SUCCEEDED(factory_->CreateDevice(dxgi, &d2d_device_)) &&
+            SUCCEEDED(d2d_device_->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &dc_)) &&
+            SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetParent(IID_PPV_ARGS(&dxgi_factory)));
+  if (ok) {
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                                              D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_UNKNOWN),
-                                              dpi_, dpi_);
-    auto hwnd_props = D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top));
-    if (FAILED(factory_->CreateHwndRenderTarget(props, hwnd_props, &target_)))
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width = std::max<LONG>(1, rc.right - rc.left);
+    desc.Height = std::max<LONG>(1, rc.bottom - rc.top);
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    desc.Scaling = DXGI_SCALING_NONE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    ok = SUCCEEDED(dxgi_factory->CreateSwapChainForHwnd(d3d_, hwnd_, &desc, nullptr, nullptr, &swap_));
+    if (ok) {
+      dxgi_factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+      dc_->SetDpi(dpi_, dpi_);
+      CreateBackbufferBitmap();
+      ok = backbuffer_ != nullptr;
+    }
+  }
+  if (dxgi_factory) dxgi_factory->Release();
+  if (adapter) adapter->Release();
+  if (dxgi) dxgi->Release();
+  if (!ok) {
+    DiscardTarget();
+    return false;
+  }
+  target_ = dc_;
+  return true;
+}
+
+bool Gfx::CreateHwndTarget() {
+  RECT rc;
+  GetClientRect(hwnd_, &rc);
+  auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                            D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_UNKNOWN), dpi_, dpi_);
+  auto hwnd_props = D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top));
+  if (FAILED(factory_->CreateHwndRenderTarget(props, hwnd_props, &hwnd_target_)))
+    return false;
+  target_ = hwnd_target_;
+  return true;
+}
+
+bool Gfx::BeginFrame() {
+  if (!target_) {
+    // DSP_GFX=hwnd forces the old render target (for comparisons).
+    const char* mode = getenv("DSP_GFX");
+    const bool force_hwnd = mode && _stricmp(mode, "hwnd") == 0;
+    if ((force_hwnd || !CreateDeviceTarget()) && !CreateHwndTarget())
       return false;
     target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    if (FAILED(target_->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &brush_)))
+    if (FAILED(target_->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &brush_))) {
+      DiscardTarget();
       return false;
+    }
     Resize();
+    if (!target_) return false;
   }
   target_->BeginDraw();
   target_->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -75,7 +166,9 @@ bool Gfx::BeginFrame() {
 void Gfx::EndFrame() {
   TrimLayoutCache();
   if (!target_) return;
-  if (target_->EndDraw() == D2DERR_RECREATE_TARGET)
+  HRESULT hr = target_->EndDraw();
+  if (SUCCEEDED(hr) && swap_) hr = swap_->Present(1, 0);  // waits for vblank, like the HWND target
+  if (hr == D2DERR_RECREATE_TARGET || hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     DiscardTarget();  // device lost: rebuilt on the next frame
 }
 

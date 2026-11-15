@@ -520,6 +520,8 @@ void MidiSynth::AllNotesOff() {
     if (channels[i] != nullptr) {
       channels[i]->set_sustain(false);  // a pedal left down by the file would hold new notes
       channels[i]->AllNotesOff();
+      held_[i][0] = 0;
+      held_[i][1] = 0;
     }
   }
 }
@@ -531,6 +533,27 @@ void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) 
   const uint8_t channel = status & 0x0F;
   data1 &= 0x7F;
   data2 &= 0x7F;
+
+  if (type == 0xB0) {  // MIDI learn and mapped controllers
+    const int learn = learn_target_.load(std::memory_order_relaxed);
+    if (learn >= 0) {
+      for (auto& row : cc_map_)  // one CC per parameter
+        for (auto& m : row)
+          if (m.load(std::memory_order_relaxed) == learn) m = -1;
+      cc_map_[channel][data1] = learn;
+      learn_target_ = -1;
+      learned_ = (channel << 8) | data1;
+      return;
+    }
+    int strip, param;
+    if (MappedTarget(channel, data1, &strip, &param)) {
+      const auto& info = strip < 0 ? effects::MasterParamInfo(param) : effects::StripParamInfo(param);
+      const float v = effects::ParamFromNormalized(info, data2 / 127.0f);
+      if (strip < 0) mixer.master().set(param, v);
+      else mixer.strip(strip).set(param, v);
+      return;
+    }
+  }
 
   midi::Event ev;
   ev.type = midi::kEventTypeChannel;
@@ -594,6 +617,7 @@ void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
   }
 
   uint32_t done = 0;
+  if (!song_.automation.empty()) ApplyAutomation(position_ms_);
   const double count_in_ms = count_in_request_ms_.exchange(0);
   if (count_in_ms > 0) {
     count_in_frames_ = uint32_t(count_in_ms * 0.001 * sample_rate_);
@@ -635,8 +659,72 @@ void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
     }
     RenderSequencer(segment, data_out + done * 2);
     done += segment;
-    if (wrap) Seek(loop_start);
+    if (wrap) {
+      Seek(loop_start);
+      if (!song_.automation.empty()) ApplyAutomation(position_ms_);  // values at the loop start
+    }
   }
+}
+
+float MidiSynth::AutomationValue(const AutomationLane& lane, double ms) {
+  const auto& pts = lane.points;
+  if (pts.empty()) return 0;
+  if (ms <= pts.front().ms) return pts.front().value;
+  if (ms >= pts.back().ms) return pts.back().value;
+  size_t lo = 0, hi = pts.size() - 1;
+  while (hi - lo > 1) {
+    const size_t mid = (lo + hi) / 2;
+    if (pts[mid].ms <= ms) lo = mid; else hi = mid;
+  }
+  const auto& a = pts[lo];
+  const auto& b = pts[hi];
+  const auto& info = lane.strip < 0 ? effects::MasterParamInfo(lane.param) : effects::StripParamInfo(lane.param);
+  using U = effects::ParamUnit;
+  if (info.unit == U::kSwitch || info.unit == U::kChannel || info.unit == U::kChoice) return a.value;  // steps
+  const double t = b.ms > a.ms ? (ms - a.ms) / (b.ms - a.ms) : 0.0;
+  return float(a.value + (b.value - a.value) * t);
+}
+
+// Writes every automated parameter's value at ms into the mixer (the mixer smooths the steps).
+void MidiSynth::ApplyAutomation(double ms) {
+  const int touched = touched_param_.load(std::memory_order_relaxed);
+  for (const auto& lane : song_.automation) {
+    if (lane.points.empty() || lane.param < 0) continue;
+    if (touched == (lane.strip + 1) * 1024 + lane.param) continue;  // the user has hold of it
+    const float v = AutomationValue(lane, ms);
+    if (lane.strip < 0) {
+      if (lane.param < effects::kMasterParamCount) mixer.master().set(lane.param, v);
+    } else if (lane.strip < 16 && lane.param < effects::kStripParamCount) {
+      mixer.strip(lane.strip).set(lane.param, v);
+    }
+  }
+}
+
+int MidiSynth::MidiMappingFor(int strip, int param) const {
+  const int target = (strip + 1) * 1024 + param;
+  for (int ch = 0; ch < 16; ++ch)
+    for (int cc = 0; cc < 128; ++cc)
+      if (cc_map_[ch][cc].load(std::memory_order_relaxed) == target) return (ch << 8) | cc;
+  return -1;
+}
+
+void MidiSynth::SetMidiMapping(int channel, int cc, int strip, int param) {
+  cc_map_[channel & 15][cc & 127] = param < 0 ? -1 : (strip + 1) * 1024 + param;
+}
+
+void MidiSynth::ClearMidiMapping(int strip, int param) {
+  const int target = (strip + 1) * 1024 + param;
+  for (auto& row : cc_map_)
+    for (auto& m : row)
+      if (m.load(std::memory_order_relaxed) == target) m = -1;
+}
+
+bool MidiSynth::MappedTarget(int channel, int cc, int* strip, int* param) const {
+  const int target = cc_map_[channel & 15][cc & 127].load(std::memory_order_relaxed);
+  if (target < 0) return false;
+  *strip = target / 1024 - 1;
+  *param = target % 1024;
+  return true;
 }
 
 void MidiSynth::RenderSequencer(uint32_t samples_count, real_t* data_out) {
@@ -831,11 +919,13 @@ void MidiSynth::MidiEventNoteOn(midi::Event* event) {
   auto channel = channels[event->channel];
   real_t frequency = chromatic_scale_freq[(Notes)event->data.note.noteNumber];
   channel->AddNote(event->data.note.noteNumber,frequency,event->data.note.velocity / 127.0f);
+  SetHeld(event->channel, event->data.note.noteNumber, true);
 }
 
 void MidiSynth::MidiEventNoteOff(midi::Event* event) {
   auto channel = channels[event->channel];
   channel->RemoveNote(event->data.note.noteNumber,event->data.note.velocity / 127.0f);
+  SetHeld(event->channel, event->data.note.noteNumber, false);
 }
 
 void MidiSynth::MidiEventProgramChange(midi::Event* event) {
@@ -900,6 +990,8 @@ void MidiSynth::MidiEventController(midi::Event* event) {
     case 0x78:  // all sound off
     case 0x7B:  // all notes off
       channel->AllNotesOff();
+      held_[event->channel & 15][0] = 0;
+      held_[event->channel & 15][1] = 0;
       break;
     case 0x79:  // reset all controllers
       channel->ResetControllers();

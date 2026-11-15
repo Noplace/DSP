@@ -48,6 +48,19 @@ struct SongTrack {
   int low_note = 127, high_note = 0;
 };
 
+// Mixer automation: a parameter's value over song time. Linear between points; held before the
+// first and after the last. strip -1 = master bus.
+struct AutomationPoint {
+  uint64_t tick = 0;
+  float value = 0;
+  double ms = 0;  // derived
+};
+struct AutomationLane {
+  int strip = 0;
+  int param = 0;
+  std::vector<AutomationPoint> points;  // sorted by tick
+};
+
 struct SongBeat {
   double ms;
   int bar;   // 1-based
@@ -64,6 +77,7 @@ struct SongTempo {
 
 struct SongInfo {
   std::vector<SongTrack> tracks;  // index = file track index
+  std::vector<AutomationLane> automation;
   uint32_t ticks_per_beat = 480;
   uint32_t next_order = 1;        // order for events added in the studio
   bool loaded = false;

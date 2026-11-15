@@ -19,6 +19,7 @@ struct ExportSettings {
   bool follow_midi_sends = false;
   bool track_mute[64], track_solo[64];
   dsp::audio::synth::SongInfo song;  // the song as it is now (edits included), rendered at speed 1, no loop
+  std::string ir_path;  // convolution impulse response file ("" = the preset kRevIr names)
   // Copies everything above (except the paths) from the live synth.
   void CaptureFrom(dsp::audio::synth::MidiSynth& synth);
 };

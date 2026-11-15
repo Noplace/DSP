@@ -2,12 +2,15 @@
 
 #include <atomic>
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 namespace dsp {
 namespace audio {
 namespace synth {
 namespace effects {
+
+struct ConvolutionIr;  // convolver.h
 
 // ---------------------------------------------------------------------------------------------
 // Parameters
@@ -17,7 +20,9 @@ namespace effects {
 // recomputes filter coefficients when they move, so dragging a control never blocks or clicks.
 // ---------------------------------------------------------------------------------------------
 
-enum class ParamUnit : uint8_t { kNone, kDb, kFader, kHz, kMs, kPercent, kRatio, kPan, kSwitch, kQ, kTimes };
+enum class ParamUnit : uint8_t { kNone, kDb, kFader, kHz, kMs, kPercent, kRatio, kPan, kSwitch, kQ, kTimes,
+                                 kChannel,  // -1 = self, 0..15 = channel 1..16
+                                 kChoice }; // small integer
 
 struct ParamInfo {
   const char* name;  // short label
@@ -49,10 +54,23 @@ inline int EqBandQ(int band) { return kEqLowQ + band * 3; }
 // Feed-forward compressor with soft knee.
 enum CompParam { kCompOn, kCompThreshold, kCompRatio, kCompAttack, kCompRelease, kCompKnee, kCompMakeup, kCompParamCount };
 
+// 3-band compressor (master bus): Linkwitz-Riley crossovers, a compressor and a gain per band.
+enum MbParam {
+  kMbOn, kMbLowX, kMbHighX,
+  kMbLowThresh, kMbLowRatio, kMbLowGain,
+  kMbMidThresh, kMbMidRatio, kMbMidGain,
+  kMbHighThresh, kMbHighRatio, kMbHighGain,
+  kMbAttack, kMbRelease,
+  kMbParamCount
+};
+inline int MbBandThresh(int band) { return kMbLowThresh + band * 3; }
+inline int MbBandRatio(int band) { return kMbLowRatio + band * 3; }
+inline int MbBandGain(int band) { return kMbLowGain + band * 3; }
+
 // One channel strip. Signal flow:
-//   PRE    trim/phase -> high-pass -> drive -> low-pass
-//   EQ     4 bands               } order swappable (kStripDynFirst)
-//   DYN    compressor            }
+//   PRE    trim/phase -> high-pass -> drive (4x oversampled) -> low-pass
+//   EQ     4 bands                                } order swappable (kStripDynFirst)
+//   DYN    gate -> compressor (optional sidechain) }
 //   POST   fader -> balance -> mute/solo, sends (pre- or post-fader) to the reverb/delay/chorus buses
 enum StripParam {
   kStripTrim, kStripPhase,
@@ -62,20 +80,26 @@ enum StripParam {
   kStripEq,                                     // kEqParamCount EQ parameters
   kStripComp = kStripEq + kEqParamCount,        // kCompParamCount compressor parameters
   kStripDynFirst = kStripComp + kCompParamCount,
+  kStripCompSidechain,                          // key from another channel's output (-1 = itself)
+  kStripGateOn, kStripGateThreshold, kStripGateRange, kStripGateAttack, kStripGateRelease,
   kStripVolume, kStripPan, kStripMute, kStripSolo,
   kStripSendPre, kStripSendReverb, kStripSendDelay, kStripSendChorus,
   kStripParamCount
 };
 
 // Master bus. Signal flow:
-//   sum of strips + FX returns (reverb, delay, chorus) -> master EQ -> bus compressor
-//   -> stereo width -> output gain   (the player's peak limiter follows)
+//   sum of strips + FX returns (reverb: algorithmic or convolution, delay, chorus) -> master EQ
+//   -> multiband compressor -> bus compressor -> stereo width -> output gain
+//   (the player's peak limiter follows)
 enum MasterParam {
   kRevSize, kRevDamp, kRevWidth, kRevPreDelay, kRevReturn,
+  kRevMode,  // 0 = algorithmic (Freeverb), 1 = convolution
+  kRevIr,    // convolution impulse response: 0 room, 1 hall, 2 plate, 3 loaded file
   kDlyTime, kDlyFeedback, kDlyDamp, kDlyPingPong, kDlyReturn,
   kChoRate, kChoDepth, kChoReturn,
   kMasterEq,                                    // kEqParamCount EQ parameters
-  kMasterComp = kMasterEq + kEqParamCount,      // kCompParamCount compressor parameters
+  kMasterMb = kMasterEq + kEqParamCount,        // kMbParamCount multiband parameters
+  kMasterComp = kMasterMb + kMbParamCount,      // kCompParamCount compressor parameters
   kMasterWidth = kMasterComp + kCompParamCount,
   kMasterGain,
   kMasterParamCount
@@ -153,6 +177,15 @@ class Mixer {
     r = master_meter_.peak[1].exchange(0.0f);
   }
   float TakeMasterGainReduction() { return master_meter_.gr.exchange(1.0f); }
+  float TakeMultibandGainReduction(int band) { return mb_gr_[band].exchange(1.0f); }
+
+  // Convolution reverb impulse response (UI thread). It is partitioned here, then handed to the
+  // audio thread whole; CollectGarbage() frees the one it let go of.
+  void SetConvolutionIr(const std::vector<float>& left, const std::vector<float>& right, const std::string& name);
+  void SetConvolutionPreset(int preset);  // 0 room, 1 hall, 2 plate
+  const std::string& convolution_ir_name() const { return ir_name_; }
+  double convolution_ir_seconds() const { return sample_rate_ ? double(ir_length_) / sample_rate_ : 0.0; }
+  void CollectGarbage();
 
   // Spectrum/scope tap: -1 = master output, 0..15 = that strip after its fader.
   void set_analyzer_source(int source) { analyzer_source_.store(source, std::memory_order_relaxed); }
@@ -170,7 +203,7 @@ class Mixer {
   struct StripState;
   struct MasterState;
 
-  void ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo);
+  void ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, const float* key);
   void ProcessMaster(float* out, uint32_t frames);
   void WriteScope(const float* stereo, uint32_t frames);
 
@@ -183,6 +216,12 @@ class Mixer {
   StripState* strips_ = nullptr;
   MasterState* master_ = nullptr;
   std::vector<float> bus_[3];  // reverb, delay, chorus send buses (interleaved stereo)
+  std::vector<float> key_[kStrips];  // raw channel signals used as compressor sidechains
+  std::atomic<float> mb_gr_[3] = {1.0f, 1.0f, 1.0f};
+  std::atomic<ConvolutionIr*> pending_ir_{nullptr}, retired_ir_{nullptr};
+  ConvolutionIr* current_ir_ = nullptr;  // audio thread
+  std::string ir_name_;
+  size_t ir_length_ = 0;
   std::atomic<float> midi_send_[kStrips][3] = {};
   std::atomic<bool> follow_midi_sends_{false};
   std::atomic<float> scope_[kScopeSize];

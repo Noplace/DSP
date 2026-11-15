@@ -153,6 +153,7 @@ void ClientMainWindow::OpenMidi(const char* path, bool autoplay) {
   session_path_.clear();  // a new song is not the old session any more
   strncpy_s(midi_name_, FileName(full).c_str(), _TRUNCATE);
   undo_.clear();
+  loudness_stats_.Reset();
   redo_.clear();
   markers_.clear();
   midi_synth_->set_loop(false, 0, 0);
@@ -205,7 +206,9 @@ bool ClientMainWindow::SaveSession(const char* path) {
     if (mute) section.Set("mute", 1);
     if (solo) section.Set("solo", 1);
   }
-  WriteMasterParams(ini.Add("master"), mixer.master());
+  auto& master_section = ini.Add("master");
+  WriteMasterParams(master_section, mixer.master());
+  if (!ir_path_.empty()) master_section.Set("reverb.ir_file", ir_path_);
   auto& transport = ini.Add("transport");
   transport.Set("speed", midi_synth_->speed());
   transport.Set("metronome", midi_synth_->metronome() ? 1 : 0);
@@ -213,6 +216,32 @@ bool ClientMainWindow::SaveSession(const char* path) {
   transport.Set("loop", midi_synth_->loop_on() ? 1 : 0);
   transport.Set("loop_start_ms", midi_synth_->loop_start_ms());
   transport.Set("loop_end_ms", midi_synth_->loop_end_ms());
+  // automation lanes (ticks of the session's song) and MIDI controller mappings
+  const auto& lanes = midi_synth_->song().automation;
+  for (size_t i = 0; i < lanes.size(); ++i) {
+    auto& a = ini.Add("automation " + std::to_string(i + 1));
+    a.Set("target", lanes[i].strip < 0 ? std::string("master") : "channel " + std::to_string(lanes[i].strip + 1));
+    a.Set("param", lanes[i].strip < 0 ? MasterParamKey(lanes[i].param) : StripParamKey(lanes[i].param));
+    std::string points;
+    char buf[64];
+    for (auto& p : lanes[i].points) {
+      snprintf(buf, sizeof(buf), "%s%llu:%.6g", points.empty() ? "" : " ", (unsigned long long)p.tick, p.value);
+      points += buf;
+    }
+    a.Set("points", points);
+  }
+  {
+    IniFile::Section map{"midi map", {}};
+    for (int ch = 0; ch < 16; ++ch)
+      for (int cc = 0; cc < 128; ++cc) {
+        int strip, param;
+        if (!midi_synth_->MappedTarget(ch, cc, &strip, &param)) continue;
+        map.Set("ch" + std::to_string(ch + 1) + ".cc" + std::to_string(cc),
+                strip < 0 ? std::string("master/") + MasterParamKey(param)
+                          : "channel " + std::to_string(strip + 1) + "/" + StripParamKey(param));
+      }
+    if (!map.values.empty()) ini.sections.push_back(map);
+  }
   for (size_t i = 0; i < markers_.size(); ++i) {
     auto& m = ini.Add("marker " + std::to_string(i + 1));
     m.Set("ms", markers_[i].ms);
@@ -243,7 +272,16 @@ bool ClientMainWindow::LoadSession(const char* path) {
     midi_synth_->set_channel_override(ch, section ? std::clamp(int(section->GetNumber("instrument", -1)), -1, 128) : -1);
     if (section) ReadStripParams(*section, mixer.strip(ch), false);
   }
-  if (auto* master = ini.Find("master")) ReadMasterParams(*master, mixer.master());
+  ir_path_.clear();
+  if (auto* master = ini.Find("master")) {
+    ReadMasterParams(*master, mixer.master());
+    const int ir = int(lroundf(mixer.master().get(kRevIr)));
+    const std::string* file = master->Get("reverb.ir_file");
+    if (ir == 3 && file && !file->empty()) {
+      if (!LoadIrFile(*file)) mixer.master().set(kRevIr, 1);
+    }
+    if (int(lroundf(mixer.master().get(kRevIr))) < 3) mixer.SetConvolutionPreset(int(lroundf(mixer.master().get(kRevIr))));
+  }
   mixer.set_follow_midi_sends(s.GetNumber("follow_file_sends", 1) != 0);
 
   // The MIDI file: as saved, else next to the session (moved folders).
@@ -272,6 +310,49 @@ bool ClientMainWindow::LoadSession(const char* path) {
     count_in_ = transport->GetNumber("count_in", 0) != 0;
     midi_synth_->set_loop(transport->GetNumber("loop", 0) != 0, transport->GetNumber("loop_start_ms", 0),
                           transport->GetNumber("loop_end_ms", 0));
+  }
+  // automation lanes go into the song; MIDI mappings into the synth
+  if (midi_synth_->song().loaded) {
+    dsp::audio::synth::SongInfo song = midi_synth_->song();
+    song.automation.clear();
+    for (int i = 1;; ++i) {
+      const auto* a = ini.Find("automation " + std::to_string(i));
+      if (!a) break;
+      const std::string target = a->Get("target") ? *a->Get("target") : "";
+      const std::string key = a->Get("param") ? *a->Get("param") : "";
+      dsp::audio::synth::AutomationLane lane;
+      lane.strip = target == "master" ? -1 : atoi(target.c_str() + std::min<size_t>(8, target.size())) - 1;
+      lane.param = lane.strip < 0 ? FindMasterParam(key.c_str()) : FindStripParam(key.c_str());
+      if (lane.param < 0 || lane.strip < -1 || lane.strip > 15) continue;
+      const std::string points = a->Get("points") ? *a->Get("points") : "";
+      for (const char* p = points.c_str(); *p;) {
+        char* end = nullptr;
+        const unsigned long long tick = strtoull(p, &end, 10);
+        if (end == p || *end != ':') break;
+        p = end + 1;
+        const float value = strtof(p, &end);
+        if (end == p) break;
+        lane.points.push_back({tick, value, 0});
+        p = end;
+        while (*p == ' ') ++p;
+      }
+      song.automation.push_back(lane);
+    }
+    if (!song.automation.empty()) InstallEditedSong(std::move(song), false);
+  }
+  for (int ch = 0; ch < 16; ++ch)
+    for (int cc = 0; cc < 128; ++cc) midi_synth_->SetMidiMapping(ch, cc, 0, -1);
+  if (const auto* map = ini.Find("midi map")) {
+    for (auto& kv : map->values) {
+      int ch = 0, cc = 0;
+      if (sscanf_s(kv.first.c_str(), "ch%d.cc%d", &ch, &cc) != 2 || ch < 1 || ch > 16 || cc < 0 || cc > 127) continue;
+      const size_t slash = kv.second.find('/');
+      if (slash == std::string::npos) continue;
+      const std::string target = kv.second.substr(0, slash), key = kv.second.substr(slash + 1);
+      const int strip = target == "master" ? -1 : atoi(target.c_str() + std::min<size_t>(8, target.size())) - 1;
+      const int param = strip < 0 ? FindMasterParam(key.c_str()) : FindStripParam(key.c_str());
+      if (param >= 0 && strip >= -1 && strip <= 15) midi_synth_->SetMidiMapping(ch - 1, cc, strip, param);
+    }
   }
   markers_.clear();
   for (int i = 1;; ++i) {
@@ -359,8 +440,34 @@ void ClientMainWindow::PromptExport() {
   settings->CaptureFrom(*midi_synth_);
   settings->midi_path = midi_path_;
   settings->wav_path = path;
+  settings->ir_path = ir_path_;
   settings->sample_rate = synth_player_->output().sample_rate() ? synth_player_->output().sample_rate() : 48000;
   exporter_.Start(*settings);
+}
+
+bool ClientMainWindow::LoadIrFile(const std::string& path) {
+  std::vector<float> l, r;
+  std::string error;
+  auto& mixer = midi_synth_->mixer;
+  if (!dsp::audio::synth::effects::ReadImpulseResponse(path.c_str(), mixer.sample_rate(), 8.0, l, r, &error)) {
+    ShowMessage("Could not load the impulse response: " + error, true);
+    return false;
+  }
+  mixer.SetConvolutionIr(l, r, FileName(path));
+  mixer.master().set(kRevIr, 3);
+  mixer.master().set(kRevMode, 1);
+  ir_path_ = path;
+  char text[MAX_PATH + 64];
+  snprintf(text, sizeof(text), "Loaded impulse response %s (%.1f s)", FileName(path).c_str(), l.size() / double(mixer.sample_rate()));
+  ShowMessage(text);
+  return true;
+}
+
+void ClientMainWindow::PromptLoadIr() {
+  char path[MAX_PATH] = {};
+  if (PromptForFile(false, "Impulse responses (*.wav)\0*.wav\0All files (*.*)\0*.*\0", nullptr,
+                    "Load impulse response", path, sizeof(path)))
+    LoadIrFile(path);
 }
 
 void ClientMainWindow::PromptExportMidi() {

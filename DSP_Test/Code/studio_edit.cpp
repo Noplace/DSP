@@ -8,13 +8,13 @@ using namespace dsp::audio::synth;
 // ---------------------------------------------------------------------------------------------
 // Edits
 // ---------------------------------------------------------------------------------------------
-void ClientMainWindow::InstallEditedSong(SongInfo song) {
+void ClientMainWindow::InstallEditedSong(SongInfo song, bool mark_modified) {
   // Building the playback events is the slow part; it happens here, outside the lock. The audio
   // thread is only kept out for the swap.
   auto prepared = MidiSynth::PrepareSong(std::move(song));
   const double pos = midi_synth_->PlaybackMs();
   synth_player_->WithSynthLocked([&] { midi_synth_->InstallSong(std::move(prepared), pos); });
-  song_modified_ = true;
+  if (mark_modified) song_modified_ = true;
   ++song_gen_;
   RefreshTrackLists();
 }
@@ -55,6 +55,7 @@ void ClientMainWindow::NewSong() {
   session_path_.clear();
   strncpy_s(midi_name_, "Untitled", _TRUNCATE);
   undo_.clear();
+  loudness_stats_.Reset();
   redo_.clear();
   markers_.clear();
   midi_synth_->set_loop(false, 0, 0);
@@ -175,7 +176,7 @@ void ClientMainWindow::PollRecording() {
         take_notes_.push_back({take_open_[ch][d1], m.song_ms, d1, take_velocity_[ch][d1], ch});
         take_open_[ch][d1] = -1.0;
       }
-    } else if (type == 0xB0 || type == 0xE0) {
+    } else if ((type == 0xB0 && !midi_synth_->cc_mapped(ch, d1)) || type == 0xE0) {  // mapped CCs drive the mixer, not the take
       take_events_.push_back({m.song_ms, m.message});
     }
   }

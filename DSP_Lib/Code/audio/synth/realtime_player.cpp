@@ -48,6 +48,7 @@ bool RealtimePlayer::Initialize(Synth* synth) {
     synth_->Initialize();
   });
   limiter_.Configure(output_.sample_rate());
+  loudness_.Configure(output_.sample_rate());
   ready_ = true;
   return true;
 }
@@ -156,6 +157,7 @@ void RealtimePlayer::Render(float* stereo_out, uint32_t frames) {
   synth_lock_.unlock();
 
   Limit(stereo_out, frames);
+  loudness_.Process(stereo_out, frames);
 
   float peak = 0.0f;
   for (uint32_t i = 0; i < frames * 2; ++i) {

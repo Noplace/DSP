@@ -429,6 +429,10 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
   hx += 96;
   if (hbutton(29, 70, "+ Marker", false, "Marker at the playhead  Ctrl+M")) AddMarker();
   if (hbutton(34, 64, "+ Track", false, "New empty track to draw notes into")) OpenEditor(AddTrack());
+  if (hbutton(35, 56, "Touch", touch_mode_, "Automation: moving a control while playing records it into its lane")) {
+    touch_mode_ = !touch_mode_;
+    if (touch_mode_) ShowMessage("Touch on: move a knob or fader while playing to record automation (right-click a control for more)");
+  }
   if (area.w > 1060) {
     char info[96];
     snprintf(info, sizeof(info), "%d tracks  \xC2\xB7  %d notes", int(visible_tracks_.size()), song.TotalNotes());
@@ -451,7 +455,9 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
   const Rect hbar(lanes.x, lanes.b(), lanes.w, hbar_h);
   lanes_w_ = lanes.w;
   const int take_rows = recording_ ? 1 : 0;
-  const int rows = int(visible_tracks_.size()) + take_rows;
+  const int track_rows_end = int(visible_tracks_.size()) + take_rows;
+  const int lane_rows = int(song.automation.size());
+  const int rows = track_rows_end + lane_rows;
   const float row_h = rows ? std::clamp(lanes.h / rows, 40.0f, 76.0f) : 60.0f;
   const float content_h = row_h * rows;
   const double pos = PlayheadMs();
@@ -540,7 +546,7 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
     g.PopClip();
     g.Line(body.x, y + row_h - 0.5f, lanes.r(), y + row_h - 0.5f, Mix(theme::kLine, theme::kBg, 0.4f));
   }
-  for (int row = take_rows; row < rows; ++row) {
+  for (int row = take_rows; row < track_rows_end; ++row) {
     const float y = lanes.y + row * row_h - track_scroll_y_;
     if (y > lanes.b() || y + row_h < lanes.y) continue;
     const int ti = visible_tracks_[row - take_rows];
@@ -610,6 +616,13 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
       g.Fill(Rect(x0, ny, x1 - x0 - (x1 - x0 > 3 ? 0.5f : 0.0f), std::max(1.5f, note_h - (note_h > 3 ? 1.0f : 0.0f))), c);
     }
     g.PopClip();
+  }
+  // automation lanes, under the tracks
+  for (int li = 0; li < lane_rows; ++li) {
+    const float y = lanes.y + (track_rows_end + li) * row_h - track_scroll_y_;
+    if (y > lanes.b() || y + row_h < lanes.y) continue;
+    g.Line(body.x, y + row_h - 0.5f, lanes.r(), y + row_h - 0.5f, Mix(theme::kLine, theme::kBg, 0.4f));
+    DrawAutomationRow(Rect(body.x, y, head_w, row_h - 1), Rect(lanes.x, y, lanes.w, row_h - 1), li, view_start_ms_, ms_per_px_);
   }
   if (rows == 0)
     g.Text("Empty song: press \xE2\x97\x8F Record (Ctrl+R) to record from a MIDI keyboard or the PC keys, or + Track to draw notes",
@@ -694,7 +707,16 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
     g.FillRound(Rect(area.x + 74, area.y + 7, 40, 15), 3, theme::kYellow);
     g.Text("SOLO", Rect(area.x + 74, area.y + 7, 40, 15), Rgb(0x0d0f13), 9.5f, Align::kCenter, true);
   }
-  g.Text("click a strip to edit its processing chain", Rect(area.x + 124, area.y, 300, 28), theme::kFaint, 11);
+  // view options
+  if (ui_.Button(Id(this, 43), Rect(area.x + 124, area.y + 4, 78, 20), "Used only", mixer_used_only_, theme::kAccent, 10.5f))
+    mixer_used_only_ = !mixer_used_only_;
+  if (ui_.Hover(Rect(area.x + 124, area.y + 4, 78, 20)))
+    ui_.Tooltip("Show only channels the song uses (or that are playing / selected)", area.x + 163, area.y + 4);
+  if (ui_.Button(Id(this, 44), Rect(area.x + 206, area.y + 4, 52, 20), "Wide", mixer_wide_, theme::kAccent, 10.5f))
+    mixer_wide_ = !mixer_wide_;
+  if (area.w > 1020)
+    g.Text("click a strip to edit its chain  \xC2\xB7  right-click a knob to automate / MIDI-learn",
+           Rect(area.x + 268, area.y, 420, 28), theme::kFaint, 11);
 
   // Follow the file's reverb/chorus send levels (GM CC91/CC93) on top of the send knobs.
   const bool follow = mixer.follow_midi_sends();
@@ -712,9 +734,14 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
   const float y0 = area.y + 28, h = area.h - 28 - 8;
   const float master_w = 96;
   const float avail = area.w - master_w - 28;
-  const float sw = std::clamp(avail / 16.0f, 40.0f, 84.0f);
+  int shown[16], count = 0;
   for (int ch = 0; ch < 16; ++ch)
-    DrawStrip(Rect(area.x + 10 + ch * sw, y0, sw - 4, h), ch);
+    if (!mixer_used_only_ || StripUsed(ch)) shown[count++] = ch;
+  const float sw = count ? std::clamp(avail / count, 40.0f, mixer_wide_ ? 130.0f : 84.0f) : 84.0f;
+  for (int i = 0; i < count; ++i)
+    DrawStrip(Rect(area.x + 10 + i * sw, y0, sw - 4, h), shown[i]);
+  if (count == 0)
+    g.Text("no channels in use yet", Rect(area.x + 10, y0, avail, 40), theme::kFaint, 12);
   DrawMasterStrip(Rect(area.r() - master_w - 10, y0, master_w, h));
 }
 
@@ -911,7 +938,7 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
   const double now_s = GetTickCount64() / 1000.0;
   ui_.knob_wheel = now_s > inspector_wheel_until_;
   // The response graph takes whatever height the cards leave, so the panel fits without scrolling.
-  graph_h_ = std::clamp(body.h - 600.0f, 120.0f, 240.0f);
+  graph_h_ = std::clamp(body.h - (sel >= 0 ? 710.0f : 900.0f), 120.0f, 240.0f);
   const float top = body.y + 12 - inspector_scroll_;
   const float end = sel >= 0 ? DrawChannelInspector(body.x + 14, top, body.w - 28, sel)
                              : DrawMasterInspector(body.x + 14, top, body.w - 28);
@@ -981,11 +1008,22 @@ float ClientMainWindow::DrawChannelInspector(float x, float y, float w, int ch) 
   }
   y = by + 86 + 10;
 
+  // GATE
+  by = DrawCard(x, y, w, 72, "GATE  \xC2\xB7  expander", p.slot(kStripGateOn), color);
+  cw = w / 8.0f;
+  for (int i = 0; i < 4; ++i) knob(x + i * cw, by, cw, kStripGateThreshold + i);
+  gfx_.Text("closes by Range when the level falls under Thresh; before the compressor",
+            Rect(x + 4 * cw + 8, by + 18, w - 4 * cw - 16, 30), theme::kFaint, 10.5f);
+  y = by + 72 + 10;
+
   // DYNAMICS
   by = DrawCard(x, y, w, 72, "DYNAMICS  \xC2\xB7  compressor", p.slot(kStripComp + kCompOn), color);
-  cw = w / 8.2f;
+  cw = w / 9.2f;
   for (int i = 0; i < 6; ++i) knob(x + i * cw, by, cw, kStripComp + kCompThreshold + i);
-  toggle(x + 6 * cw, by, cw, kStripDynFirst, "Pre-EQ");
+  knob(x + 6 * cw, by, cw, kStripCompSidechain);
+  if (ui_.Hover(Rect(x + 6 * cw, by, cw, 66)))
+    ui_.Tooltip("Sidechain: duck this channel under another one (e.g. pads under the drums)", x + 6.5f * cw, by);
+  toggle(x + 7 * cw, by, cw, kStripDynFirst, "Pre-EQ");
   DrawGainReduction(Rect(x + w - 34, by, 26, 70), strip_meter_[ch].gr_db);
   y = by + 72 + 10;
 
@@ -1018,13 +1056,46 @@ float ClientMainWindow::DrawMasterInspector(float x, float y, float w) {
   y += graph_h_ + 10;
 
   float cw = w / 7.0f;
-  float by = DrawCard(x, y, w, 72, "REVERB  \xC2\xB7  send bus", nullptr, color);
-  knob(x, by, cw, kRevSize, theme::kAccent);
-  knob(x + cw, by, cw, kRevDamp, theme::kAccent);
+  auto& mixer = midi_synth_->mixer;
+  const bool convolution = m.get(kRevMode) >= 0.5f;
+  float by = DrawCard(x, y, w, 104, convolution ? "REVERB  \xC2\xB7  convolution  \xC2\xB7  send bus"
+                                                : "REVERB  \xC2\xB7  algorithmic  \xC2\xB7  send bus", nullptr, color);
+  knob(x, by, cw, kRevSize, convolution ? theme::kFaint : theme::kAccent);
+  knob(x + cw, by, cw, kRevDamp, convolution ? theme::kFaint : theme::kAccent);
   knob(x + 2 * cw, by, cw, kRevWidth, theme::kAccent);
   knob(x + 3 * cw, by, cw, kRevPreDelay, theme::kAccent);
   knob(x + 4.3f * cw, by, cw, kRevReturn, theme::kText);
-  y = by + 72 + 10;
+  {
+    // engine and impulse response
+    float bx = x + 6;
+    const float by2 = by + 72;
+    if (ui_.Button(Id(this, 110), Rect(bx, by2, 92, 22), "Algorithmic", !convolution, theme::kAccent, 11))
+      m.set(kRevMode, 0);
+    bx += 96;
+    if (ui_.Button(Id(this, 111), Rect(bx, by2, 92, 22), "Convolution", convolution, theme::kAccent, 11))
+      m.set(kRevMode, 1);
+    bx += 104;
+    const int ir = int(lroundf(m.get(kRevIr)));
+    for (int i = 0; i < 3; ++i) {
+      if (ui_.Button(Id(this, 112 + i), Rect(bx, by2, 50, 22), PresetIrName(i), convolution && ir == i, theme::kAccent, 11)) {
+        mixer.SetConvolutionPreset(i);
+        m.set(kRevIr, float(i));
+        m.set(kRevMode, 1);
+        ir_path_.clear();
+      }
+      bx += 54;
+    }
+    if (ui_.Button(Id(this, 115), Rect(bx, by2, 60, 22), "Load...", convolution && ir == 3, theme::kAccent, 11))
+      PromptLoadIr();
+    if (ui_.Hover(Rect(bx, by2, 60, 22)))
+      ui_.Tooltip("Load an impulse response recorded in a real space (WAV)", bx + 30, by2);
+    if (convolution) {
+      char info[160];
+      snprintf(info, sizeof(info), "%s  %.1f s", mixer.convolution_ir_name().c_str(), mixer.convolution_ir_seconds());
+      gfx_.Text(info, Rect(x + 5.4f * cw, by + 14, w - 5.4f * cw - 8, 40), theme::kDim, 10.5f);
+    }
+  }
+  y = by + 104 + 10;
 
   by = DrawCard(x, y, w, 72, "DELAY  \xC2\xB7  send bus", nullptr, color);
   knob(x, by, cw, kDlyTime, theme::kGreen);
@@ -1062,11 +1133,60 @@ float ClientMainWindow::DrawMasterInspector(float x, float y, float w) {
   }
   y = by + 86 + 10;
 
+  // MULTIBAND
+  by = DrawCard(x, y, w, 160, "MULTIBAND  \xC2\xB7  3-band compressor", m.slot(kMasterMb + kMbOn), color);
+  cw = w / 9.5f;
+  knob(x, by, cw, kMasterMb + kMbLowX, theme::kYellow);
+  knob(x + cw, by, cw, kMasterMb + kMbHighX, theme::kYellow);
+  knob(x + 2.2f * cw, by, cw, kMasterMb + kMbAttack, theme::kOrange);
+  knob(x + 3.2f * cw, by, cw, kMasterMb + kMbRelease, theme::kOrange);
+  static const char* kMbNames[3] = {"LOW", "MID", "HIGH"};
+  for (int b = 0; b < 3; ++b) {
+    const float gx = x + b * 3 * cw;
+    gfx_.Text(kMbNames[b], Rect(gx, by + 72, 3 * cw, 14), kBandColor[b == 0 ? 0 : b == 1 ? 1 : 3], 9.5f, Align::kCenter, true);
+    knob(gx, by + 86, cw, kMasterMb + MbBandThresh(b), theme::kOrange);
+    knob(gx + cw, by + 86, cw, kMasterMb + MbBandRatio(b), theme::kOrange);
+    knob(gx + 2 * cw, by + 86, cw, kMasterMb + MbBandGain(b), theme::kOrange);
+    DrawGainReduction(Rect(x + w - 104 + b * 34, by, 26, 70), mb_gr_db_[b], kMbNames[b]);
+  }
+  y = by + 160 + 10;
+
   by = DrawCard(x, y, w, 72, "BUS COMPRESSOR", m.slot(kMasterComp + kCompOn), color);
   cw = w / 7.5f;
   for (int i = 0; i < 6; ++i) knob(x + i * cw, by, cw, kMasterComp + kCompThreshold + i, theme::kOrange);
   DrawGainReduction(Rect(x + w - 38, by, 26, 70), master_meter_.gr_db);
-  y = by + 72;
+  y = by + 72 + 10;
+
+  // LOUDNESS (after the limiter: what actually comes out)
+  by = DrawCard(x, y, w, 64, "LOUDNESS  \xC2\xB7  EBU R128 / BS.1770, after the limiter", nullptr, color);
+  {
+    auto value = [&](float vx, const char* label, double lufs) {
+      char text[32];
+      if (lufs <= -70) snprintf(text, sizeof(text), "-inf");
+      else snprintf(text, sizeof(text), "%.1f", lufs);
+      gfx_.Text(label, Rect(vx, by, 90, 14), theme::kDim, 10, Align::kLeft, true);
+      gfx_.Text(text, Rect(vx, by + 14, 90, 26), theme::kText, 19, Align::kLeft, false, true);
+      gfx_.Text("LUFS", Rect(vx, by + 40, 90, 14), theme::kFaint, 9.5f);
+    };
+    value(x + 6, "MOMENTARY", loudness_stats_.momentary());
+    value(x + 6 + w * 0.2f, "SHORT-TERM", loudness_stats_.short_term());
+    value(x + 6 + w * 0.4f, "INTEGRATED", loudness_stats_.integrated());
+    // correlation: -1 .. +1
+    const float cx0 = x + w * 0.6f + 6, cwid = w * 0.4f - 76;
+    const double corr = loudness_stats_.correlation();
+    gfx_.Text("CORRELATION", Rect(cx0, by, cwid, 14), theme::kDim, 10, Align::kLeft, true);
+    const Rect bar(cx0, by + 22, cwid, 8);
+    gfx_.FillRound(bar, 3, Rgb(0x0b0c10));
+    const float mid = bar.cx(), pos = bar.x + bar.w * float((corr + 1.0) * 0.5);
+    gfx_.Fill(Rect(std::min(mid, pos), bar.y, fabsf(pos - mid), bar.h), corr < 0 ? theme::kRed : theme::kGreen);
+    gfx_.Line(mid, bar.y - 2, mid, bar.b() + 2, theme::kFaint, 1);
+    char ct[16];
+    snprintf(ct, sizeof(ct), "%+.2f", corr);
+    gfx_.Text(ct, Rect(cx0, by + 34, cwid, 16), corr < 0 ? theme::kRed : theme::kText, 11, Align::kCenter, false, true);
+    if (ui_.Button(Id(this, 116), Rect(x + w - 64, by + 18, 56, 22), "Reset", false, theme::kAccent, 11))
+      loudness_stats_.Reset();
+  }
+  y = by + 64;
   return y;
 }
 

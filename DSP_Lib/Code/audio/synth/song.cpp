@@ -163,6 +163,12 @@ void UpdateSongTiming(SongInfo& song) {
     song.tempo.push_back({ms, 60000000.0 / c.us, c.tick, c.us});
   }
 
+  for (auto& lane : song.automation) {
+    std::stable_sort(lane.points.begin(), lane.points.end(),
+                     [](const AutomationPoint& a, const AutomationPoint& b) { return a.tick < b.tick; });
+    for (auto& p : lane.points) p.ms = song.TickToMs(p.tick);
+  }
+
   // Note times, length and per-track summaries.
   uint64_t max_tick = 0;
   bool any_channel = false;
