@@ -104,6 +104,7 @@
     <ClInclude Include="Code\audio\synth\instruments\waveguide_synthesis.h" />
     <ClInclude Include="Code\audio\synth\instruments\waveguide_string.h" />
     <ClInclude Include="Code\audio\synth\instruments\modal.h" />
+    <ClInclude Include="Code\audio\synth\instruments\drum_kit.h" />
     <ClInclude Include="Code\audio\synth\instruments\string_loop.h" />
     <ClInclude Include="Code\audio\synth\instruments\calibration.h" />
     <ClInclude Include="Code\audio\synth\instruments\calibrated_string.h" />
@@ -141,6 +142,7 @@
     <ClCompile Include="Code\audio\synth\instruments\percussion.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\waveguide_string.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\modal.cpp" />
+    <ClCompile Include="Code\audio\synth\instruments\drum_kit.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\string_loop.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\calibration.cpp" />
     <ClCompile Include="Code\audio\synth\instruments\calibrated_string.cpp" />

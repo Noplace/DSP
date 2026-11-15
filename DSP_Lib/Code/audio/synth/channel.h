@@ -63,21 +63,47 @@ class Channel : public Component {
     }
 
     memset(mono_, 0, sizeof(real_t) * samples_to_generate);
+    // Voices the instrument places in the stereo field (drum kit pieces) also add to a side
+    // signal: left = mid + side, right = mid - side, equal power, unity in the centre.
+    bool stereo = false;
     for (int i = 0; i < voice_count_; ++i) {
       auto& v = voices_[i];
       auto inst = v.instrument;
       const int index = v.index;
       const real_t gain = v.gain;
-      for (uint32_t s = 0; s < samples_to_generate; ++s)
-        mono_[s] += inst->Tick(index) * gain;
+      const real_t pan = inst->VoicePan(index);
+      if (pan < 0 || side_.size() < samples_to_generate) {
+        for (uint32_t s = 0; s < samples_to_generate; ++s)
+          mono_[s] += inst->Tick(index) * gain;
+        continue;
+      }
+      if (!stereo) {
+        memset(side_.data(), 0, sizeof(real_t) * samples_to_generate);
+        stereo = true;
+      }
+      const real_t p = pan > 1 ? 1 : pan;
+      const real_t gl = sqrt(2 * (1 - p)), gr = sqrt(2 * p);
+      const real_t mid = gain * 0.5f * (gl + gr), side = gain * 0.5f * (gl - gr);
+      for (uint32_t s = 0; s < samples_to_generate; ++s) {
+        const real_t x = inst->Tick(index);
+        mono_[s] += x * mid;
+        side_[s] += x * side;
+      }
     }
 
     const real_t level = amplification_ * expression_;
     const real_t left = level * pan_l, right = level * pan_r;
     auto bufptr = buffer_;
-    for (uint32_t s = 0; s < samples_to_generate; ++s) {
-      *bufptr++ = left * mono_[s];
-      *bufptr++ = right * mono_[s];
+    if (stereo) {
+      for (uint32_t s = 0; s < samples_to_generate; ++s) {
+        *bufptr++ = left * (mono_[s] + side_[s]);
+        *bufptr++ = right * (mono_[s] - side_[s]);
+      }
+    } else {
+      for (uint32_t s = 0; s < samples_to_generate; ++s) {
+        *bufptr++ = left * mono_[s];
+        *bufptr++ = right * mono_[s];
+      }
     }
     //effects processing
     for (int i=0;i<kEffectCount;++i) {
@@ -194,7 +220,11 @@ class Channel : public Component {
   }
   void set_buffer(real_t* buffer) { buffer_ = buffer; }
   // Scratch buffer for summing voices, at least as many frames as one render block.
-  void set_mono_buffer(real_t* mono, uint32_t capacity) { mono_ = mono; mono_capacity_ = capacity; }
+  void set_mono_buffer(real_t* mono, uint32_t capacity) {
+    mono_ = mono;
+    mono_capacity_ = capacity;
+    side_.assign(capacity, 0);
+  }
 
  private:
   friend MidiSynth;
@@ -213,6 +243,7 @@ class Channel : public Component {
   real_t* buffer_;
   real_t* mono_;
   uint32_t mono_capacity_;
+  std::vector<real_t> side_;  // stereo voices: side signal (same capacity as mono_)
   Voice voices_[kMaxVoices];
   int voice_count_;
   real_t amplification_,expression_,panning_,pan_l,pan_r,pitch_bend_range_,bend_factor_,aux_send;

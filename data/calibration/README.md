@@ -44,3 +44,29 @@ build\x64\Release\DSP_Render.exe compare 7 reference\vcsl-harpsichord-english\su
 ```
 
 Note: VCSL names notes with middle C = "C3"; the tools detect the octave from the audio.
+
+## Drum kit (GM channel 10)
+
+The kit (`instruments/drum_kit.*`) is physically modelled and does not need calibration data.
+No drum recordings have been fitted yet, so there is no drum `.cal` file. Each piece (kick,
+snare, toms, hi-hat, cymbals, hand percussion) is one physical object, and its GM notes are
+strokes on it: 42/44/46 on one hi-hat, 51/53 on one ride, 37/38/40 on one snare.
+
+- Membranes use Bessel modes with air loading and a velocity-dependent contact pulse.
+  Tension-modulation pitch glide follows the head's energy.
+- The snare wires are noise gated by the snare-side head.
+- Cymbals are clouds of 170-230 modes with a noise-driven energy cascade.
+
+Compare a drum note with a recording (band energies and centroid over time, side by side, plus
+an A/B WAV):
+
+```bash
+build\x64\Release\DSP_Render.exe drumcompare 38 reference\some-snare\snare_hit_f.wav build\samples\ab_snare.wav 110
+```
+
+Other tools:
+
+- `drum <note> [velocity]`: profile and envelope of one note.
+- `drums [rate] [dir] [velocity] [first] [last]`: level and decay table, with optional WAVs.
+- `drumgroove <out.wav>`: a test performance.
+- `drumcpu`: CPU cost per drum voice.

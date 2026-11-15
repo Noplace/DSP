@@ -68,6 +68,9 @@ class InstrumentProcessor : public Component {
   // True if the instrument turns velocity into loudness itself (e.g. recorded velocity layers),
   // so the channel must not apply its generic velocity curve on top.
   virtual bool HandlesVelocity() const { return false; }
+  // Stereo position of a voice inside the channel (0 left .. 1 right), or < 0 to leave it in the
+  // middle. A drum kit places each piece where it sits in the kit.
+  virtual real_t VoicePan(int v) const { (void)v; return -1; }
   // Pitch change on a sounding voice (pitch bend). Instruments that can't glide may ignore it.
   virtual void BendFrequency(real_t freq, int v) { SetFrequency(freq, v); }
 

@@ -571,25 +571,347 @@ int CmdDesign(int argc, char** argv) {
 
 int CmdDrums(int argc, char** argv) {
   uint32_t rate = argc > 2 ? atoi(argv[2]) : 48000;
-  const char* wav_dir = argc > 3 ? argv[3] : nullptr;  // optional: write one WAV per drum
-  printf("GM drum kit at %u Hz, velocity 100\n", rate);
-  printf("note  name                    peak dBFS   -20dB s  -40dB s\n");
-  for (int note = 27; note <= 87; ++note) {
-    const char* name = synth::instruments::ModalInstrument::DrumName(note);
+  const char* wav_dir = argc > 3 && strcmp(argv[3], "-") ? argv[3] : nullptr;  // optional: one WAV per drum
+  const int velocity = argc > 4 ? atoi(argv[4]) : 100;
+  printf("GM drum kit at %u Hz, velocity %d\n", rate, velocity);
+  printf("(loud: loudest 50 ms RMS in dBFS; pan: right-left amplitude balance)\n");
+  printf("note  name                    peak dBFS  loud dB   -20dB s  -40dB s    pan\n");
+  const int first = argc > 5 ? atoi(argv[5]) : 27, last = argc > 6 ? atoi(argv[6]) : (argc > 5 ? first : 87);
+  for (int note = first; note <= last; ++note) {
+    const char* name = synth::instruments::DrumKit::DrumName(note);
     if (!name) continue;
     Engine e(rate);
-    auto stereo = RenderNote(e, 0, note, 100, 0.1, 2.9);
+    auto stereo = RenderNote(e, 0, note, velocity, 0.1, 2.9);
     auto mono = ToMono(stereo);
     float peak = 0;
     for (float v : mono) peak = std::max(peak, fabsf(v));
     Decay d = MeasureDecay(mono, rate, 3.0);
-    printf("%4d  %-22s  %8.1f  %8.2f  %7.2f\n", note, name, 20 * log10(peak + 1e-12), d.t20, d.t40);
+    double loud = 0, el = 1e-30, er = 1e-30;
+    const size_t win = rate / 20;
+    for (size_t s = 0; s + win <= mono.size(); s += win / 4) {
+      double sum = 0;
+      for (size_t i = s; i < s + win; ++i) sum += double(mono[i]) * mono[i];
+      loud = std::max(loud, sum / win);
+    }
+    for (size_t i = 0; i < mono.size(); ++i) {
+      el += double(stereo[2 * i]) * stereo[2 * i];
+      er += double(stereo[2 * i + 1]) * stereo[2 * i + 1];
+    }
+    printf("%4d  %-22s  %8.1f  %7.1f  %8.2f  %7.2f  %+5.2f\n", note, name, 20 * log10(peak + 1e-12), 10 * log10(loud + 1e-20),
+           d.t20, d.t40, (sqrt(er) - sqrt(el)) / (sqrt(er) + sqrt(el)));
     if (wav_dir) {
       char path[MAX_PATH];
       sprintf_s(path, "%s\\drum_%02d.wav", wav_dir, note);
       WriteWav(path, stereo, rate);
     }
   }
+  return 0;
+}
+
+// ---- Drum analysis: band energies and spectral centroid over time after the onset ------------
+
+void Fft(std::vector<double>& re, std::vector<double>& im) {  // in place, size a power of 2
+  const size_t n = re.size();
+  for (size_t i = 1, j = 0; i < n; ++i) {
+    size_t bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
+  }
+  for (size_t len = 2; len <= n; len <<= 1) {
+    const double a = -2 * 3.14159265358979 / len;
+    for (size_t i = 0; i < n; i += len)
+      for (size_t k = 0; k < len / 2; ++k) {
+        const double c = cos(a * k), s = sin(a * k);
+        const double xr = re[i + k + len / 2] * c - im[i + k + len / 2] * s;
+        const double xi = re[i + k + len / 2] * s + im[i + k + len / 2] * c;
+        re[i + k + len / 2] = re[i + k] - xr; im[i + k + len / 2] = im[i + k] - xi;
+        re[i + k] += xr; im[i + k] += xi;
+      }
+  }
+}
+
+const int kDrumBands = 5, kDrumWindows = 5;
+const double kDrumBandEdges[kDrumBands + 1] = {20, 150, 600, 2500, 7000, 20000};
+const double kDrumWindowEdges[kDrumWindows + 1] = {0, 0.01, 0.04, 0.12, 0.35, 1.0};  // s after the onset
+
+struct DrumProfile {
+  double peak_db = -200, loud_db = -200, t20 = -1, t40 = -1;
+  double band_db[kDrumWindows][kDrumBands];  // energy per band per window, dB re the loudest cell
+  double centroid[kDrumWindows];             // Hz
+  double low_hz[3];                          // strongest component below 400 Hz at 0, 50 and 150 ms
+};
+
+// Strongest spectral peak between lo and hi Hz in a Hann window starting at `start`.
+double LowPeak(const std::vector<float>& x, uint32_t rate, size_t start, double lo, double hi) {
+  const size_t window = rate / 20;
+  if (start + window > x.size()) return 0;
+  double best = 0, best_f = 0;
+  for (double f = lo; f <= hi; f *= 1.002) {
+    double coeff = 2 * cos(2 * 3.14159265358979 * f / rate), s1 = 0, s2 = 0;
+    for (size_t i = 0; i < window; ++i) {
+      double w = 0.5 - 0.5 * cos(2 * 3.14159265358979 * i / (window - 1));
+      double s0 = x[start + i] * w + coeff * s1 - s2;
+      s2 = s1; s1 = s0;
+    }
+    double p = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+    if (p > best) { best = p; best_f = f; }
+  }
+  return best_f;
+}
+
+DrumProfile ProfileDrum(const std::vector<float>& mono, uint32_t rate) {
+  DrumProfile p;
+  float peak = 0;
+  for (float v : mono) peak = std::max(peak, fabsf(v));
+  p.peak_db = 20 * log10(peak + 1e-12);
+  size_t onset = 0;
+  while (onset < mono.size() && fabsf(mono[onset]) < 0.05f * peak) ++onset;
+  onset = onset > rate / 1000 ? onset - rate / 1000 : 0;
+  std::vector<float> x(mono.begin() + onset, mono.end());
+  const size_t win = rate / 20;
+  double loud = 0;
+  for (size_t s = 0; s + win <= x.size(); s += win / 4) {
+    double sum = 0;
+    for (size_t i = s; i < s + win; ++i) sum += double(x[i]) * x[i];
+    loud = std::max(loud, sum / win);
+  }
+  p.loud_db = 10 * log10(loud + 1e-20);
+  Decay d = MeasureDecay(x, rate, x.size() / double(rate));
+  p.t20 = d.t20; p.t40 = d.t40;
+  double top = 1e-30;
+  double energy[kDrumWindows][kDrumBands] = {};
+  for (int w = 0; w < kDrumWindows; ++w) {
+    const size_t a = size_t(kDrumWindowEdges[w] * rate), b = std::min(x.size(), size_t(kDrumWindowEdges[w + 1] * rate));
+    size_t n = 1024;
+    while (n < b - a) n <<= 1;
+    std::vector<double> re(n, 0.0), im(n, 0.0);
+    for (size_t i = a; i < b; ++i) re[i - a] = x[i];  // rectangular: the windows tile the sound
+    Fft(re, im);
+    double sum = 1e-30, fsum = 0;
+    for (size_t k = 1; k < n / 2; ++k) {
+      const double f = double(k) * rate / n, pw = re[k] * re[k] + im[k] * im[k];
+      sum += pw; fsum += pw * f;
+      for (int band = 0; band < kDrumBands; ++band)
+        if (f >= kDrumBandEdges[band] && f < kDrumBandEdges[band + 1]) energy[w][band] += pw;
+    }
+    p.centroid[w] = fsum / sum;
+    for (int band = 0; band < kDrumBands; ++band) {
+      energy[w][band] /= double(n) * std::max<size_t>(1, b - a);  // power (Parseval), so windows compare
+      top = std::max(top, energy[w][band]);
+    }
+  }
+  for (int w = 0; w < kDrumWindows; ++w)
+    for (int band = 0; band < kDrumBands; ++band) p.band_db[w][band] = 10 * log10(energy[w][band] / top + 1e-12);
+  p.low_hz[0] = LowPeak(x, rate, 0, 30, 400);
+  p.low_hz[1] = LowPeak(x, rate, size_t(0.05 * rate), 30, 400);
+  p.low_hz[2] = LowPeak(x, rate, size_t(0.15 * rate), 30, 400);
+  return p;
+}
+
+void PrintProfiles(const DrumProfile* a, const char* a_name, const DrumProfile* b, const char* b_name) {
+  printf("            %-34s", a_name);
+  if (b) printf(" | %s", b_name);
+  printf("\npeak / loudest 50 ms   %6.1f / %6.1f dBFS", a->peak_db, a->loud_db);
+  if (b) printf("       | %6.1f / %6.1f dBFS", b->peak_db, b->loud_db);
+  printf("\n-20 / -40 dB after     %6.2f / %6.2f s   ", a->t20, a->t40);
+  if (b) printf("       | %6.2f / %6.2f s", b->t20, b->t40);
+  printf("\nlow peak 0/50/150 ms %5.0f/%5.0f/%5.0f Hz", a->low_hz[0], a->low_hz[1], a->low_hz[2]);
+  if (b) printf("       | %5.0f/%5.0f/%5.0f Hz", b->low_hz[0], b->low_hz[1], b->low_hz[2]);
+  printf("\nband energy (dB re loudest cell) and spectral centroid per window after the onset:\n");
+  printf("window ms   <150 150-600 0.6-2.5k 2.5-7k  >7k  centroid");
+  if (b) printf(" |  <150 150-600 0.6-2.5k 2.5-7k  >7k  centroid");
+  printf("\n");
+  for (int w = 0; w < kDrumWindows; ++w) {
+    printf("%4.0f-%-4.0f ", kDrumWindowEdges[w] * 1000, kDrumWindowEdges[w + 1] * 1000);
+    for (int band = 0; band < kDrumBands; ++band) printf(" %6.1f", a->band_db[w][band]);
+    printf("  %6.0f", a->centroid[w]);
+    if (b) {
+      printf(" | ");
+      for (int band = 0; band < kDrumBands; ++band) printf(" %6.1f", b->band_db[w][band]);
+      printf("  %6.0f", b->centroid[w]);
+    }
+    printf("\n");
+  }
+}
+
+// Profile of one drum note: kit drum <note> [velocity] [rate]
+int CmdDrumInfo(int argc, char** argv) {
+  if (argc < 3) return 2;
+  const int note = atoi(argv[2]), velocity = argc > 3 ? atoi(argv[3]) : 100;
+  const uint32_t rate = argc > 4 ? atoi(argv[4]) : 48000;
+  Engine e(rate);
+  auto mono = ToMono(RenderNote(e, 0, note, velocity, 0.1, 2.9));
+  DrumProfile p = ProfileDrum(mono, rate);
+  char title[96];
+  const char* name = synth::instruments::DrumKit::DrumName(note);
+  sprintf_s(title, "note %d %s, velocity %d", note, name ? name : "?", velocity);
+  PrintProfiles(&p, title, nullptr, nullptr);
+  printf("envelope (RMS dBFS per 20 ms):");
+  for (size_t s = 0, i = 0; s + rate / 50 <= mono.size() && i < 40; s += rate / 50, ++i) {
+    double sum = 1e-20;
+    for (size_t k = s; k < s + rate / 50; ++k) sum += double(mono[k]) * mono[k];
+    printf("%s%.0f", i % 10 ? " " : "\n  ", 10 * log10(sum / (rate / 50)));
+  }
+  printf("\n");
+  return 0;
+}
+
+// Renders a drum note like a recording (same rate and length), profiles both the same way and
+// prints them side by side; optionally writes an A/B file (recording, gap, synth).
+int CmdDrumCompare(int argc, char** argv) {
+  if (argc < 4) return 2;
+  const int note = atoi(argv[2]);
+  const char* wav = argv[3];
+  const char* ab_path = argc > 4 && strcmp(argv[4], "-") ? argv[4] : nullptr;
+  const int velocity = argc > 5 ? atoi(argv[5]) : 100;
+  analysis::Audio rec;
+  std::string error;
+  if (!analysis::ReadWav(wav, rec, &error)) { fprintf(stderr, "%s: %s\n", wav, error.c_str()); return 1; }
+  Engine e(rec.rate);
+  const double seconds = std::max(1.0, rec.mono.size() / double(rec.rate));
+  auto syn = ToMono(RenderNote(e, 0, note, velocity, 0.05, seconds - 0.05));
+  DrumProfile pr = ProfileDrum(rec.mono, rec.rate), ps = ProfileDrum(syn, rec.rate);
+  char title[96];
+  const char* name = synth::instruments::DrumKit::DrumName(note);
+  sprintf_s(title, "synth: note %d %s, velocity %d", note, name ? name : "?", velocity);
+  PrintProfiles(&pr, "recording", &ps, title);
+  double err = 0;
+  for (int w = 0; w < kDrumWindows; ++w)
+    for (int band = 0; band < kDrumBands; ++band) err += fabs(std::max(-60.0, pr.band_db[w][band]) - std::max(-60.0, ps.band_db[w][band]));
+  printf("mean |band difference| %.1f dB over %d cells\n", err / (kDrumWindows * kDrumBands), kDrumWindows * kDrumBands);
+  if (ab_path) {
+    auto peak_of = [](const std::vector<float>& v) { float p = 1e-9f; for (float x : v) p = std::max(p, fabsf(x)); return p; };
+    const float gr = 0.5f / peak_of(rec.mono), gs = 0.5f / peak_of(syn);
+    std::vector<float> ab;
+    for (float v : rec.mono) { ab.push_back(v * gr); ab.push_back(v * gr); }
+    ab.insert(ab.end(), size_t(rec.rate) * 2 * 7 / 10, 0.0f);
+    for (float v : syn) { ab.push_back(v * gs); ab.push_back(v * gs); }
+    if (WriteWav(ab_path, ab, rec.rate)) printf("A/B written to %s (recording, then synth, both peak-normalised)\n", ab_path);
+  }
+  return 0;
+}
+
+// A short drum performance on channel 10 (no file needed): rock groove with ghost notes and
+// hi-hat accents, open/closed/pedal hi-hat chokes, a tom fill into a crash, a ride section with
+// bell accents, a snare roll and a final crash + kick. Shows velocity, round-robin and chokes.
+int CmdDrumGroove(int argc, char** argv) {
+  if (argc < 3) return 2;
+  const uint32_t rate = argc > 3 ? atoi(argv[3]) : 48000;
+  const double bpm = argc > 4 ? atof(argv[4]) : 100;
+  struct Hit { double beat; int note, vel; };
+  std::vector<Hit> hits;
+  auto add = [&](double beat, int note, int vel) { hits.push_back({beat, note, vel}); };
+  double bar = 0;
+  // Bars 1-4: groove, eighth-note hats with accents, ghost notes on the snare.
+  for (int b = 0; b < 4; ++b, bar += 4) {
+    for (int e = 0; e < 8; ++e) {
+      const bool open = b == 3 && e == 7;
+      add(bar + e * 0.5, open ? 46 : 42, e % 2 ? 62 : 96);
+    }
+    add(bar + 0, 36, 112); add(bar + 1.5, 36, 92); add(bar + 2, 36, 108);
+    add(bar + 1, 38, 110); add(bar + 3, 38, 116);
+    add(bar + 1.75, 38, 34); add(bar + 3.75, 38, 30);
+    if (b == 1) add(bar + 2.75, 38, 40);
+  }
+  add(bar, 44, 80);  // pedal closes the open hat
+  // Bar 5: tom fill (16ths) down the kit.
+  const int toms[] = {50, 50, 48, 48, 47, 47, 45, 45, 43, 43, 41, 41, 38, 38, 41, 41};
+  for (int i = 0; i < 16; ++i) add(bar + i * 0.25, toms[i], 84 + (i % 2 ? 0 : 20));
+  add(bar + 0, 36, 100); add(bar + 2, 36, 100);
+  bar += 4;
+  // Bars 6-9: ride with bell accents, crash on the one, pedal hat on 2 and 4.
+  add(bar, 49, 120); add(bar, 36, 120);
+  for (int b = 0; b < 4; ++b, bar += 4) {
+    for (int q = 0; q < 4; ++q) {
+      add(bar + q, q == 0 ? 53 : 51, q == 0 ? 96 : 84);
+      add(bar + q + 0.5, 51, 64);
+    }
+    add(bar + 1, 44, 70); add(bar + 3, 44, 70);
+    add(bar + 0, 36, 108); add(bar + 2.5, 36, 96);
+    add(bar + 1, 38, 104); add(bar + 3, 38, 110);
+  }
+  // Bar 10: crescendo snare roll (32nds) into crash + kick + china.
+  for (int i = 0; i < 32; ++i) add(bar + i * 0.125, 38, 30 + i * 3);
+  bar += 4;
+  add(bar, 57, 124); add(bar, 36, 124); add(bar + 0.5, 52, 100); add(bar + 1, 55, 96);
+  std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.beat < b.beat; });
+
+  Engine e(rate);
+  synth::effects::MasterLimiter limiter;
+  limiter.Configure(rate);
+  std::vector<float> out;
+  const double sec_per_beat = 60.0 / bpm;
+  float min_gain = 1;
+  LARGE_INTEGER t0, t1, freq;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&t0);
+  size_t frame = 0;
+  float block[kBlock * 2];
+  auto render = [&](size_t until) {
+    while (frame < until) {
+      uint32_t n = uint32_t(std::min<size_t>(kBlock, until - frame));
+      e.synth.RenderIdleStereo(n, block);
+      min_gain = std::min(min_gain, limiter.Process(block, n));
+      out.insert(out.end(), block, block + n * 2);
+      frame += n;
+    }
+  };
+  for (const Hit& h : hits) {
+    render(size_t(h.beat * sec_per_beat * rate));
+    e.synth.HandleMidiMessage(0x99, uint8_t(h.note), uint8_t(h.vel));
+    e.synth.HandleMidiMessage(0x89, uint8_t(h.note), 0);
+  }
+  render(frame + size_t(4.0 * rate));
+  QueryPerformanceCounter(&t1);
+  const double cpu_s = double(t1.QuadPart - t0.QuadPart) / freq.QuadPart, seconds = frame / double(rate);
+  float peak = 0;
+  for (float v : out) peak = std::max(peak, fabsf(v));
+  printf("%s: %zu hits, %.1f s audio in %.2f s (%.0fx realtime, %.2f%% of one core), peak %.1f dBFS, limiter max %.1f dB\n",
+         argv[2], hits.size(), seconds, cpu_s, seconds / cpu_s, 100 * cpu_s / seconds, 20 * log10(peak + 1e-12),
+         20 * log10(min_gain));
+  return WriteWav(argv[2], out, rate) ? 0 : 1;
+}
+
+// CPU per drum piece: every hit re-strikes the piece at `rate_hz` so it never stops sounding.
+int CmdDrumCpu(int argc, char** argv) {
+  const double seconds = argc > 2 ? atof(argv[2]) : 5.0;
+  const uint32_t rate = argc > 3 ? atoi(argv[3]) : 48000;
+  printf("CPU per drum voice at %u Hz (one piece sounding, re-struck every 250 ms, %.0f s each)\n", rate, seconds);
+  printf("note  name                    piece                 modes   %% of one core\n");
+  static const int notes[] = {36, 38, 42, 46, 49, 51, 45, 52, 54, 69, 81};
+  float block[kBlock * 2];
+  LARGE_INTEGER freq;
+  QueryPerformanceFrequency(&freq);
+  for (int note : notes) {
+    Engine e(rate);
+    synth::instruments::DrumKit kit_info;
+    kit_info.set_sample_rate(rate);
+    kit_info.Prepare();
+    const uint32_t blocks = uint32_t(seconds * rate / kBlock), hit_every = rate / 4 / kBlock;
+    LARGE_INTEGER t0, t1;
+    QueryPerformanceCounter(&t0);
+    for (uint32_t b = 0; b < blocks; ++b) {
+      if (b % hit_every == 0) {
+        e.synth.HandleMidiMessage(0x99, uint8_t(note), 100);
+        e.synth.HandleMidiMessage(0x89, uint8_t(note), 0);
+      }
+      e.synth.RenderIdleStereo(kBlock, block);
+    }
+    QueryPerformanceCounter(&t1);
+    const double cpu_s = double(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
+    const char* piece = synth::instruments::DrumKit::PieceName(note);
+    printf("%4d  %-22s  %-20s  %5d   %6.3f%%\n", note, synth::instruments::DrumKit::DrumName(note), piece ? piece : "-",
+           kit_info.PieceModes(note), 100 * cpu_s / (double(blocks) * kBlock / rate));
+  }
+  // Baseline: the same engine with nothing playing.
+  Engine e(rate);
+  const uint32_t blocks = uint32_t(seconds * rate / kBlock);
+  LARGE_INTEGER t0, t1;
+  QueryPerformanceCounter(&t0);
+  for (uint32_t b = 0; b < blocks; ++b) e.synth.RenderIdleStereo(kBlock, block);
+  QueryPerformanceCounter(&t1);
+  printf("(idle engine, no notes: %.3f%%)\n", 100 * double(t1.QuadPart - t0.QuadPart) / freq.QuadPart / (double(blocks) * kBlock / rate));
   return 0;
 }
 
@@ -629,6 +951,10 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "tune")) result = CmdTune(argc, argv);
     else if (!strcmp(argv[1], "cpu")) result = CmdCpu(argc, argv);
     else if (!strcmp(argv[1], "drums")) result = CmdDrums(argc, argv);
+    else if (!strcmp(argv[1], "drum")) result = CmdDrumInfo(argc, argv);
+    else if (!strcmp(argv[1], "drumcompare")) result = CmdDrumCompare(argc, argv);
+    else if (!strcmp(argv[1], "drumcpu")) result = CmdDrumCpu(argc, argv);
+    else if (!strcmp(argv[1], "drumgroove")) result = CmdDrumGroove(argc, argv);
     else if (!strcmp(argv[1], "analyze")) result = CmdAnalyze(argc, argv);
     else if (!strcmp(argv[1], "survey")) result = CmdSurvey(argc, argv);
     else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
@@ -642,7 +968,11 @@ int main(int argc, char** argv) {
             "  DSP_Render note <program 1-128|0=drums> <note> <velocity> <hold_s> <out.wav> [tail_s] [rate]\n"
             "  DSP_Render tune <program> [first_note] [last_note] [step] [rate]\n"
             "  DSP_Render cpu <program> <voices> [seconds] [rate]\n"
-            "  DSP_Render drums [rate] [wav_dir]\n"
+            "  DSP_Render drums [rate] [wav_dir|-] [velocity] [first_note] [last_note]\n"
+            "  DSP_Render drum <note> [velocity] [rate]\n"
+            "  DSP_Render drumcompare <note> <recording.wav> [ab_out.wav|-] [velocity]\n"
+            "  DSP_Render drumcpu [seconds] [rate]\n"
+            "  DSP_Render drumgroove <out.wav> [rate] [bpm]\n"
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
             "  DSP_Render survey <folder of recordings>\n"
             "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms]\n"
