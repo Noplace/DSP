@@ -224,3 +224,6 @@ pip-log.txt
 # Package manager output (no longer used)
 packages/
 vcpkg_installed/
+
+# Reference recordings for calibration (downloaded, not committed)
+reference/

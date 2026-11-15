@@ -96,7 +96,6 @@ void MidiSynth::BuildInstrumentBank() {
 
   //                         attack sustain  attack  decay  release (levels, ms)
   const Envelope pluck   = {0.9f,  0.0f,     2.0f,  700.0f, 150.0f};
-  const Envelope mallet  = {0.9f,  0.0f,     1.0f,  450.0f, 250.0f};
   const Envelope organ   = {0.45f, 0.45f,    6.0f,    1.0f,  60.0f};
   const Envelope strings = {0.35f, 0.32f,  140.0f,   60.0f, 300.0f};
   const Envelope brass   = {0.45f, 0.35f,   45.0f,   90.0f, 120.0f};
@@ -107,14 +106,26 @@ void MidiSynth::BuildInstrumentBank() {
   const Envelope fx      = {0.4f,  0.30f,  200.0f,  200.0f, 500.0f};
 
   using instruments::WaveguideString;
-  auto harpsichord = add(new WaveguideString(WaveguideString::Harpsichord()));
+  // Calibrated from recordings of a real instrument when the calibration file is available,
+  // otherwise the hand-set waveguide preset.
+  calibrated_instruments_.clear();
+  instruments::InstrumentProcessor* harpsichord = nullptr;
+  if (!calibration_dir_.empty()) {
+    auto cal = std::make_shared<instruments::StringCalibration>();
+    std::string path = calibration_dir_ + "\\harpsichord_english.cal";
+    if (cal->Load(path.c_str()) && !cal->notes.empty()) {
+      harpsichord = add(new instruments::CalibratedString(cal, 0.12f, 0.35f));
+      calibrated_instruments_.push_back("harpsichord (" + cal->name + ")");
+    }
+  }
+  if (!harpsichord)
+    harpsichord = add(new WaveguideString(WaveguideString::Harpsichord()));
   auto piano       = add(new WaveguideString(WaveguideString::Piano()));
   auto guitar      = add(new WaveguideString(WaveguideString::NylonGuitar()));
   auto steel       = add(new WaveguideString(WaveguideString::SteelGuitar()));
   auto muted       = add(new WaveguideString(WaveguideString::MutedGuitar()));
   auto bass        = add(new WaveguideString(WaveguideString::Bass()));
   auto harp        = add(new WaveguideString(WaveguideString::Harp()));
-  auto sine_mallet = add(new OscWave(OscWave::Sine, mallet));
   auto tri_organ   = add(new OscWave(OscWave::Triangle, organ));
   auto sq_organ    = add(new OscWave(OscWave::Square, Envelope{0.25f, 0.25f, 6.0f, 1.0f, 60.0f}));
   auto saw_strings = add(new OscWave(OscWave::Sawtooth, strings));
@@ -128,9 +139,19 @@ void MidiSynth::BuildInstrumentBank() {
   auto saw_pad     = add(new OscWave(OscWave::Sawtooth, Envelope{0.2f, 0.18f, 450.0f, 100.0f, 700.0f}));
   auto tri_fx      = add(new OscWave(OscWave::Triangle, fx));
 
+  using instruments::ModalInstrument;
+  auto modal = [&](const instruments::ModalParams& p) { return add(new ModalInstrument(p)); };
+  drum_kit_ = add(ModalInstrument::NewDrumKit());
+
   assign(0, 5, piano);           // pianos
   assign(6, 7, harpsichord);     // harpsichord, clavinet
-  assign(8, 14, sine_mallet);    // celesta .. tubular bells
+  assign(8, 8, modal(ModalInstrument::Celesta()));
+  assign(9, 9, modal(ModalInstrument::Glockenspiel()));
+  assign(10, 10, modal(ModalInstrument::MusicBox()));
+  assign(11, 11, modal(ModalInstrument::Vibraphone()));
+  assign(12, 12, modal(ModalInstrument::Marimba()));
+  assign(13, 13, modal(ModalInstrument::Xylophone()));
+  assign(14, 14, modal(ModalInstrument::TubularBells()));
   assign(15, 15, harp);          // dulcimer
   assign(16, 18, tri_organ);     // drawbar / percussive / rock organ
   assign(19, 20, sq_organ);      // church / reed organ
@@ -145,7 +166,7 @@ void MidiSynth::BuildInstrumentBank() {
   assign(40, 44, saw_strings);   // violin .. tremolo strings
   assign(45, 45, muted);         // pizzicato strings
   assign(46, 46, harp);          // orchestral harp
-  assign(47, 47, sine_mallet);   // timpani
+  assign(47, 47, modal(ModalInstrument::Timpani()));
   assign(48, 51, saw_strings);   // string ensembles
   assign(52, 54, tri_pad);       // choir, voice oohs, synth voice
   assign(55, 55, saw_pluck);     // orchestra hit
@@ -168,17 +189,43 @@ void MidiSynth::BuildInstrumentBank() {
   assign(104, 104, harpsichord); // sitar
   assign(105, 105, steel);       // banjo
   assign(106, 107, harpsichord); // shamisen, koto
-  assign(108, 108, sine_mallet); // kalimba
+  assign(108, 108, modal(ModalInstrument::Kalimba()));
   assign(109, 109, sq_reed);     // bagpipe
   assign(110, 110, saw_strings); // fiddle
   assign(111, 111, sq_reed);     // shanai
-  assign(112, 118, sine_mallet); // tinkle bell .. synth drum
+  auto bells = modal(ModalInstrument::TubularBells());
+  assign(112, 112, bells);       // tinkle bell
+  assign(113, 113, modal(ModalInstrument::Agogo()));
+  assign(114, 114, modal(ModalInstrument::SteelDrums()));
+  assign(115, 115, modal(ModalInstrument::Woodblock()));
+  assign(116, 117, modal(ModalInstrument::Taiko()));   // taiko, melodic tom
+  assign(118, 118, modal(ModalInstrument::SynthDrum()));
   assign(119, 127, tri_fx);      // reverse cymbal, sound effects
+}
+
+// "data\calibration" in the executable's folder or one of its parents (build output lives a few
+// levels below the repository root).
+static std::string FindCalibrationDir() {
+  char path[MAX_PATH];
+  DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
+  if (len == 0 || len >= MAX_PATH) return std::string();
+  std::string dir(path, len);
+  for (int level = 0; level < 6; ++level) {
+    size_t slash = dir.find_last_of("\\/");
+    if (slash == std::string::npos) break;
+    dir.resize(slash);
+    std::string candidate = dir + "\\data\\calibration";
+    DWORD attr = GetFileAttributesA(candidate.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) return candidate;
+  }
+  return std::string();
 }
 
 void MidiSynth::Initialize() {
   if (initialized_ == true)
     return;
+  if (calibration_dir_.empty())
+    calibration_dir_ = FindCalibrationDir();
 
   {
     static const real_t A4_freq = 440;
@@ -212,11 +259,7 @@ void MidiSynth::Initialize() {
     channels[i]->set_panning(0.5f);
     channels[i]->set_amplification(100 / 127.0f);  // GM default volume (CC7 = 100)
   }
-  //percussion
-  percussion_instr = new instruments::Percussion();
-  percussion_instr->set_sample_rate(sample_rate_);
-  percussion_instr->Prepare();
-  channels[9]->set_instrument(percussion_instr);
+  channels[9]->set_instrument(drum_kit_);  // GM channel 10: drum kit
 
   delay_unit.Initialize(uint32_t(sample_rate_*2));
   delay_unit.set_feedback(0.3f);
@@ -253,9 +296,9 @@ void MidiSynth::Deinitialize() {
     SafeDeleteArray(&buffers.channels[i]);
     SafeDeleteArray(&buffers.mono[i]);
   }
-  SafeDelete(&percussion_instr);
-  // instr[] only points into the store (several programs share one instrument).
+  // instr[] and drum_kit_ only point into the store (several programs share one instrument).
   memset(instr, 0, sizeof(instr));
+  drum_kit_ = nullptr;
   instrument_store_.clear();
   SafeDeleteArray(&buffers.aux);
   SafeDeleteArray(&buffers.main);
@@ -326,7 +369,7 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
         case midi::kEventSubtypeProgramChange:
 
           if (source_event->channel == 9) {
-            percussion_instr->Load();
+            drum_kit_->Load();
           } else {
             instr[source_event->data.program.number]->Load();
           }
@@ -415,6 +458,8 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
     }
   }
 
+  if (program_override_ >= 0)
+    set_program_override(program_override_);  // songs without program changes start on it too
   Reset();
 }
 
@@ -801,11 +846,19 @@ void MidiSynth::MidiEventNoteOff(midi::Event* event) {
 void MidiSynth::MidiEventProgramChange(midi::Event* event) {
   auto channel = channels[event->channel];
   if (event->channel == 9) {
-    channel->set_instrument(percussion_instr);
+    channel->set_instrument(drum_kit_);
   } else {
-		channel->set_instrument(instr[event->data.program.number]);
+    int program = program_override_ >= 0 ? program_override_ : event->data.program.number;
+    channel->set_instrument(instr[program & 127]);
   }
   channel->set_silence(false);
+}
+
+void MidiSynth::set_program_override(int program) {
+  program_override_ = program;
+  if (initialized_ && program >= 0)
+    for (int i = 0; i < kChannelCount; ++i)
+      if (i != 9) channels[i]->set_instrument(instr[program & 127]);
 }
 
 void MidiSynth::MidiEventController(midi::Event* event) {

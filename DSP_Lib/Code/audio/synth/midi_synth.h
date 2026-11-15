@@ -44,7 +44,7 @@ class MidiSynth : public Synth {
     kModeSequencer,
     kModeTest
   };
-  MidiSynth() : Synth(),initialized_(false),mode_(kModeSequencer),percussion_instr(nullptr),
+  MidiSynth() : Synth(),initialized_(false),mode_(kModeSequencer),drum_kit_(nullptr),
                 last_event(nullptr),tracks(nullptr),ticks_per_beat(0),samples_to_next_event(0),bpm(0),track_count_(0) {
     memset(&instr,0,sizeof(instr));
     memset(&channels,0,sizeof(channels));
@@ -78,6 +78,16 @@ class MidiSynth : public Synth {
   void set_mode(Mode mode) {
     mode_ = mode;
   }
+  // Folder with calibration files (*.cal) for instruments modelled on recordings. If not set,
+  // Initialize() looks for "data\calibration" next to or above the executable.
+  void set_calibration_dir(const std::string& dir) { calibration_dir_ = dir; }
+  const std::string& calibration_dir() const { return calibration_dir_; }
+  // Play every melodic channel with one GM program (0-127) regardless of the file's program
+  // changes; -1 = follow the file.
+  void set_program_override(int program);
+  int program_override() const { return program_override_; }
+  // Names of the calibrated instruments in use (empty if none were found).
+  const std::vector<std::string>& calibrated_instruments() const { return calibrated_instruments_; }
   effects::Effect* aux_effects[kEffectCount];
   effects::Effect* main_effects[kEffectCount];
   effects::Delay delay_unit;
@@ -134,7 +144,10 @@ class MidiSynth : public Synth {
   } buffers;  
   instruments::InstrumentProcessor* instr[kInstrumentCount];  // GM program -> instrument (not owned)
   std::vector<std::unique_ptr<instruments::InstrumentProcessor>> instrument_store_;
-  instruments::Percussion* percussion_instr;
+  std::string calibration_dir_;
+  std::vector<std::string> calibrated_instruments_;
+  int program_override_ = -1;
+  instruments::InstrumentProcessor* drum_kit_;  // channel 10 (owned by instrument_store_)
   Channel* channels[kChannelCount];
   midi::Event* last_event;
   Track* tracks;

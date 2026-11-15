@@ -1,6 +1,6 @@
 // DSP_Render: offline rendering and measurement for the DSP synth.
 //
-//   DSP_Render render <in.mid> <out.wav> [rate]
+//   DSP_Render render <in.mid> <out.wav> [rate] [program]
 //       Render a whole MIDI file (with the master limiter) to a 32-bit float WAV.
 //   DSP_Render note <program> <note> <velocity> <hold_s> <out.wav> [tail_s] [rate]
 //       Render one note. program is GM 1..128 (0 = drum channel).
@@ -8,6 +8,8 @@
 //       Render notes across the range and measure pitch error (cents) and decay times.
 //   DSP_Render cpu <program> <voices> [seconds] [rate]
 //       Time the render of <voices> simultaneous held notes.
+//   DSP_Render drums [rate] [wav_dir]
+//       Survey every GM drum note: peak level and decay (optionally one WAV each).
 #define NOMINMAX  // use std::min/std::max, not the windows.h macros
 #include <algorithm>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include <math.h>
 #include <vector>
 #include "../DSP_Lib/Code/dsp.h"
+#include "analysis.h"
 
 using namespace dsp::audio;
 
@@ -120,6 +123,36 @@ double MeasurePitch(const std::vector<float>& mono, uint32_t rate, double expect
   return rate / (best + offset);
 }
 
+// Frequency of the strongest spectral peak within +-1 semitone of `expected_hz` (Goertzel scan
+// in 1-cent steps over a Hann window, refined with a parabola). Unlike the period method this
+// works for inharmonic sounds (bells, bars, drums) where the waveform has no clean period.
+double MeasurePeak(const std::vector<float>& mono, uint32_t rate, double expected_hz, double start_s) {
+  const size_t start = size_t(start_s * rate);
+  const size_t window = 16384;
+  if (start + window >= mono.size())
+    return 0;
+  std::vector<double> x(window);
+  for (size_t i = 0; i < window; ++i)
+    x[i] = mono[start + i] * (0.5 - 0.5 * cos(2.0 * 3.14159265358979 * i / (window - 1)));
+  auto power = [&](double f) {
+    double coeff = 2.0 * cos(2.0 * 3.14159265358979 * f / rate), s1 = 0, s2 = 0;
+    for (size_t i = 0; i < window; ++i) {
+      double s0 = x[i] + coeff * s1 - s2;
+      s2 = s1; s1 = s0;
+    }
+    return s1 * s1 + s2 * s2 - coeff * s1 * s2;
+  };
+  double best_cents = 0, best = -1, prev = 0, next = 0;
+  std::vector<double> p(201);
+  for (int c = -100; c <= 100; ++c)
+    p[c + 100] = power(expected_hz * pow(2.0, c / 1200.0));
+  for (int i = 1; i < 200; ++i)
+    if (p[i] > best) { best = p[i]; best_cents = i - 100; prev = p[i - 1]; next = p[i + 1]; }
+  double denom = prev - 2 * best + next;
+  if (denom < 0) best_cents += 0.5 * (prev - next) / denom;
+  return expected_hz * pow(2.0, best_cents / 1200.0);
+}
+
 struct Decay { double peak_db, t20, t40; };
 
 // Times (s) from the loudest 10 ms frame until the level first drops 20 and 40 dB.
@@ -151,7 +184,9 @@ const char* NoteName(int note, char* buf, size_t size) {
 int CmdRender(int argc, char** argv) {
   if (argc < 4) return 2;
   uint32_t rate = argc > 4 ? atoi(argv[4]) : 48000;
+  int program = argc > 5 ? atoi(argv[5]) : 0;  // GM 1..128 to play every melodic part on; 0 = as written
   Engine e(rate);
+  if (program > 0) e.synth.set_program_override(program - 1);
   e.synth.LoadMidiFromFile(argv[2]);
   e.host.stopped = false;  // LoadMidi calls Stop() before loading
   const double length_s = e.host.song_length_ms / 1000.0;
@@ -166,9 +201,13 @@ int CmdRender(int argc, char** argv) {
   LARGE_INTEGER t0, t1, freq;
   QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&t0);
+  uint64_t blocks = 0, limited_blocks = 0;
   while (!e.host.stopped && out.size() / 2 < max_frames) {
     e.synth.RenderSamplesStereo(kBlock, block);
-    min_gain = std::min(min_gain, limiter.Process(block, kBlock));
+    float g = limiter.Process(block, kBlock);
+    min_gain = std::min(min_gain, g);
+    ++blocks;
+    if (g < 0.891f) ++limited_blocks;  // more than 1 dB of gain reduction
     out.insert(out.end(), block, block + kBlock * 2);
   }
   e.synth.AllNotesOff();
@@ -182,8 +221,9 @@ int CmdRender(int argc, char** argv) {
   float peak = 0;
   for (float v : out) peak = std::max(peak, fabsf(v));
   double seconds = out.size() / 2.0 / rate;
-  printf("%s: %.1f s audio in %.2f s (%.0fx realtime), peak %.1f dBFS, limiter max %.1f dB\n", argv[3], seconds,
-         cpu_s, seconds / cpu_s, 20 * log10(peak + 1e-12), 20 * log10(min_gain));
+  printf("%s: %.1f s audio in %.2f s (%.0fx realtime), peak %.1f dBFS, limiter max %.1f dB, >1 dB for %.1f%% of the song\n",
+         argv[3], seconds, cpu_s, seconds / cpu_s, 20 * log10(peak + 1e-12), 20 * log10(min_gain),
+         blocks ? 100.0 * limited_blocks / blocks : 0.0);
   return WriteWav(argv[3], out, rate) ? 0 : 1;
 }
 
@@ -208,21 +248,263 @@ int CmdTune(int argc, char** argv) {
   int first = argc > 3 ? atoi(argv[3]) : 24, last = argc > 4 ? atoi(argv[4]) : 108, step = argc > 5 ? atoi(argv[5]) : 6;
   uint32_t rate = argc > 6 ? atoi(argv[6]) : 48000;
   printf("program %d at %u Hz (note held 4 s)\n", program, rate);
-  printf("note   expected Hz  measured Hz   cents   peak dB   -20dB s  -40dB s\n");
-  double worst = 0;
+  printf("(period: waveform repeat, meaningful for harmonic sounds; peak: strongest partial near the note)\n");
+  printf("note   expected Hz  period Hz  cents   peak Hz    cents   peak dB  -20dB s  -40dB s\n");
+  double worst_period = 0, worst_peak = 0;
   for (int note = first; note <= last; note += step) {
     Engine e(rate);  // fresh engine per note: no leftovers
     auto mono = ToMono(RenderNote(e, program, note, 100, 4.0, 0.2));
     double expected = 440.0 * pow(2.0, (note - 69) / 12.0);
-    double measured = MeasurePitch(mono, rate, expected, 0.15);
-    double cents = measured > 0 ? 1200 * log2(measured / expected) : 0;
+    double period_hz = MeasurePitch(mono, rate, expected, 0.15);
+    double peak_hz = MeasurePeak(mono, rate, expected, 0.05);
+    double c1 = period_hz > 0 ? 1200 * log2(period_hz / expected) : 0;
+    double c2 = peak_hz > 0 ? 1200 * log2(peak_hz / expected) : 0;
     Decay d = MeasureDecay(mono, rate, 4.0);
     char name[8];
-    printf("%-5s  %10.2f  %11.2f  %+7.1f  %8.1f  %8.2f  %7.2f\n", NoteName(note, name, sizeof(name)), expected,
-           measured, cents, d.peak_db, d.t20, d.t40);
-    if (fabs(cents) > fabs(worst)) worst = cents;
+    printf("%-5s  %10.2f  %9.2f  %+6.1f  %9.2f  %+6.1f  %8.1f  %7.2f  %7.2f\n", NoteName(note, name, sizeof(name)),
+           expected, period_hz, c1, peak_hz, c2, d.peak_db, d.t20, d.t40);
+    if (fabs(c1) > fabs(worst_period)) worst_period = c1;
+    if (fabs(c2) > fabs(worst_peak)) worst_peak = c2;
   }
-  printf("worst pitch error: %+.1f cents\n", worst);
+  printf("worst pitch error: period %+.1f cents, peak %+.1f cents\n", worst_period, worst_peak);
+  return 0;
+}
+
+int CmdAnalyze(int argc, char** argv) {
+  if (argc < 3) return 2;
+  analysis::Audio audio;
+  std::string error;
+  if (!analysis::ReadWav(argv[2], audio, &error)) { fprintf(stderr, "%s: %s\n", argv[2], error.c_str()); return 1; }
+  int note = argc > 3 ? atoi(argv[3]) : analysis::NoteFromFileName(argv[2]);
+  if (note < 0) { fprintf(stderr, "no note in the file name; pass it as the next argument\n"); return 1; }
+  analysis::NoteAnalysis a;
+  if (!analysis::AnalyzeNote(audio, note, a)) { fprintf(stderr, "analysis failed\n"); return 1; }
+  printf("%s (%u Hz, %d ch, %.2f s)\n", argv[2], audio.rate, audio.channels, audio.mono.size() / double(audio.rate));
+  analysis::PrintAnalysis(a);
+  return 0;
+}
+
+// WAV files in a folder with the note named in each file name, sorted by note.
+std::vector<std::pair<int, std::string>> CollectRecordings(const char* folder) {
+  std::vector<std::pair<int, std::string>> files;
+  WIN32_FIND_DATAA fd;
+  std::string pattern = std::string(folder) + "\\*.wav";
+  HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return files;
+  do {
+    std::string path = std::string(folder) + "\\" + fd.cFileName;
+    int note = analysis::NoteFromFileName(path.c_str());
+    if (note >= 0) files.push_back({note, path});
+  } while (FindNextFileA(h, &fd));
+  FindClose(h);
+  std::sort(files.begin(), files.end());
+  return files;
+}
+
+// A library names all its files one way, so use the most common octave correction for all.
+int ConsensusOctave(const std::vector<std::pair<int, std::string>>& files) {
+  int votes[3] = {0, 0, 0};
+  for (auto& [named, path] : files) {
+    analysis::Audio audio;
+    analysis::NoteAnalysis a;
+    if (analysis::ReadWav(path.c_str(), audio) && analysis::AnalyzeNote(audio, named, a))
+      ++votes[a.octave_shift / 12 + 1];
+  }
+  int shift = (votes[0] > votes[1] && votes[0] > votes[2]) ? -12 : (votes[2] > votes[1] ? 12 : 0);
+  printf("octave correction: %+d semitones (votes: -12:%d  0:%d  +12:%d)\n", shift, votes[0], votes[1], votes[2]);
+  return shift;
+}
+
+// Analyses every WAV in a folder and prints one summary line per note.
+int CmdSurvey(int argc, char** argv) {
+  if (argc < 3) return 2;
+  auto files = CollectRecordings(argv[2]);
+  if (files.empty()) { fprintf(stderr, "no WAV files with note names in %s\n", argv[2]); return 1; }
+  int shift = ConsensusOctave(files);
+  printf("note  MIDI    f0 Hz   cents        B   partials  T60(f0)  T60 p2  T60 p4  T60 p8  T60@2k  T60@5k  len s\n");
+  for (auto& [named, path] : files) {
+    if (named < 0) continue;
+    analysis::Audio audio;
+    analysis::NoteAnalysis a;
+    if (!analysis::ReadWav(path.c_str(), audio) || !analysis::AnalyzeNote(audio, named, a, 40, shift)) {
+      printf("%s: analysis failed\n", path.c_str());
+      continue;
+    }
+    auto t60_of = [&](int n) {
+      for (auto& p : a.partials) if (p.n == n) return p.t60_s;
+      return -1.0;
+    };
+    auto model = [&](double f) { return 6.907755 / std::max(1e-9, a.b1 + a.b3 * f * f); };
+    char name[8];
+    printf("%-5s %4d  %8.2f  %+5.1f  %8.1e  %5d    %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %5.1f\n",
+           NoteName(a.midi_note, name, sizeof(name)), a.midi_note, a.f0_hz, a.tuning_cents, a.inharmonicity,
+           int(a.partials.size()), t60_of(1), t60_of(2), t60_of(4), t60_of(8), model(2000), model(5000),
+           audio.mono.size() / double(audio.rate));
+  }
+  return 0;
+}
+
+// Builds a calibration file from a folder of recorded notes: measured string parameters per note
+// plus the excitation (pluck + body) obtained by inverse-filtering each recording with the fitted
+// string loop.
+int CmdCalibrate(int argc, char** argv) {
+  if (argc < 4) return 2;
+  const double exc_ms = argc > 4 ? atof(argv[4]) : 200.0;
+  auto files = CollectRecordings(argv[2]);
+  if (files.empty()) { fprintf(stderr, "no WAV files with note names in %s\n", argv[2]); return 1; }
+  int shift = ConsensusOctave(files);
+  using namespace synth::instruments;
+  StringCalibration cal;
+  // Name: the output file's stem (e.g. "harpsichord_english").
+  std::string stem = argv[3];
+  size_t slash = stem.find_last_of("\\/");
+  if (slash != std::string::npos) stem = stem.substr(slash + 1);
+  size_t dot = stem.find_last_of('.');
+  if (dot != std::string::npos) stem.resize(dot);
+  cal.name = stem;
+  printf("note    f0 Hz        B   T60 f0  T60 2k  disp err  string removed  exc peak\n");
+  for (auto& [named, path] : files) {
+    analysis::Audio audio;
+    analysis::NoteAnalysis a;
+    if (!analysis::ReadWav(path.c_str(), audio) || !analysis::AnalyzeNote(audio, named, a, 40, shift)) {
+      printf("%s: analysis failed\n", path.c_str());
+      continue;
+    }
+    LoopParams lp = {a.f0_hz, a.inharmonicity, std::max(0.01, a.b1), std::max(0.0, a.b3)};
+    LoopDesign design = DesignLoop(audio.rate, lp, DispersionStagesFor(a.f0_hz));
+    StringLoop loop;
+    loop.Allocate(int(audio.rate / 8) + 64);
+    loop.SetDesign(design);
+
+    // Inverse filter from just before the onset.
+    const size_t start = a.onset > audio.rate / 100 ? a.onset - audio.rate / 100 : 0;
+    const size_t exc_len = size_t(exc_ms * 0.001 * audio.rate);
+    const size_t check_len = std::min(audio.mono.size() - start, exc_len + size_t(0.4 * audio.rate));
+    std::vector<float> residual(check_len);
+    for (size_t i = 0; i < check_len; ++i) residual[i] = loop.Inverse(audio.mono[start + i]);
+    // How much of the recording the fitted string explains after the excitation window.
+    double ey = 1e-30, ee = 1e-30;
+    for (size_t i = exc_len; i < check_len; ++i) {
+      ey += double(audio.mono[start + i]) * audio.mono[start + i];
+      ee += double(residual[i]) * residual[i];
+    }
+    CalibratedNote cn;
+    cn.midi_note = a.midi_note;
+    cn.f0_hz = float(a.f0_hz);
+    cn.inharmonicity = float(a.inharmonicity);
+    cn.b1 = float(lp.b1);
+    cn.b3 = float(lp.b3);
+    for (float v : audio.mono) cn.peak = std::max(cn.peak, fabsf(v));
+    cn.excitation_rate = audio.rate;
+    cn.excitation.assign(residual.begin(), residual.begin() + std::min(exc_len, residual.size()));
+    const size_t fade = cn.excitation.size() / 4;  // half-Hann fade over the last quarter
+    for (size_t i = 0; i < fade; ++i) {
+      double w = 0.5 + 0.5 * cos(3.14159265358979 * (i + 1) / fade);
+      cn.excitation[cn.excitation.size() - fade + i] *= float(w);
+    }
+    float exc_peak = 0;
+    for (float v : cn.excitation) exc_peak = std::max(exc_peak, fabsf(v));
+    char name[8];
+    auto t60 = [&](double f) { return 6.907755 / (lp.b1 + lp.b3 * f * f); };
+    printf("%-5s %8.2f  %8.1e  %6.2f  %6.2f  %6.1f c   %8.1f dB    %6.1f dB\n", NoteName(a.midi_note, name, sizeof(name)),
+           a.f0_hz, a.inharmonicity, t60(a.f0_hz), t60(2000), design.max_partial_error_cents, 10 * log10(ey / ee),
+           20 * log10(exc_peak / cn.peak));
+    cal.notes.push_back(std::move(cn));
+  }
+  if (!cal.Save(argv[3])) { fprintf(stderr, "cannot write %s\n", argv[3]); return 1; }
+  size_t samples = 0;
+  for (auto& n : cal.notes) samples += n.excitation.size();
+  printf("wrote %s: %zu notes, %.0f KB of excitation\n", argv[3], cal.notes.size(), samples * 4 / 1024.0);
+  return 0;
+}
+
+// Renders the note of a recording with the synth (same program, rate and duration), analyses both
+// the same way and prints them side by side; optionally writes an A/B file (recording, gap, synth).
+int CmdCompare(int argc, char** argv) {
+  if (argc < 4) return 2;
+  const int program = atoi(argv[2]);
+  const char* wav = argv[3];
+  const char* ab_path = argc > 4 ? argv[4] : nullptr;
+  analysis::Audio rec;
+  std::string error;
+  if (!analysis::ReadWav(wav, rec, &error)) { fprintf(stderr, "%s: %s\n", wav, error.c_str()); return 1; }
+  int named = analysis::NoteFromFileName(wav);
+  analysis::NoteAnalysis ra;
+  if (named < 0 || !analysis::AnalyzeNote(rec, named, ra)) { fprintf(stderr, "cannot analyse %s\n", wav); return 1; }
+
+  Engine e(rec.rate);
+  if (e.synth.calibrated_instruments().empty()) printf("note: no calibration found (looked in '%s')\n", e.synth.calibration_dir().c_str());
+  const double seconds = rec.mono.size() / double(rec.rate);
+  auto stereo = RenderNote(e, program, ra.midi_note, 100, std::max(0.5, seconds - 0.5), 0.5);
+  analysis::Audio syn;
+  syn.rate = rec.rate;
+  syn.channels = 1;
+  syn.mono = ToMono(stereo);
+  analysis::NoteAnalysis sa;
+  if (!analysis::AnalyzeNote(syn, ra.midi_note, sa, 40, 0)) { fprintf(stderr, "cannot analyse the synth output\n"); return 1; }
+
+  // Levels relative to each sound's strongest partial (absolute gain differs by design).
+  auto strongest = [](const analysis::NoteAnalysis& a) {
+    double m = -300;
+    for (auto& p : a.partials) m = std::max(m, p.level_db);
+    return m;
+  };
+  const double rtop = strongest(ra), stop = strongest(sa);
+  char name[8];
+  printf("%s, MIDI %d (%s), program %d at %u Hz\n", wav, ra.midi_note, NoteName(ra.midi_note, name, sizeof(name)), program, rec.rate);
+  printf("inharmonicity B: recording %.2e, synth %.2e\n", ra.inharmonicity, sa.inharmonicity);
+  printf("   n   rec dB  syn dB   diff | rec T60  syn T60  ratio | partial offset rec / syn (cents)\n");
+  double level_err = 0, t60_log_err = 0;
+  int level_count = 0, t60_count = 0;
+  for (auto& rp : ra.partials) {
+    const analysis::Partial* sp = nullptr;
+    for (auto& p : sa.partials) if (p.n == rp.n) sp = &p;
+    if (!sp) { printf("  %2d  %6.1f       -        |  %6.2f       -        |  %+5.1f /   -\n", rp.n, rp.level_db - rtop, rp.t60_s, rp.cents_off); continue; }
+    double dl = (sp->level_db - stop) - (rp.level_db - rtop);
+    level_err += fabs(dl); ++level_count;
+    double ratio = (rp.t60_s > 0 && sp->t60_s > 0) ? sp->t60_s / rp.t60_s : 0;
+    if (ratio > 0) { t60_log_err += fabs(log2(ratio)); ++t60_count; }
+    printf("  %2d  %6.1f  %6.1f  %+5.1f |  %6.2f   %6.2f  %5.2f |  %+5.1f / %+5.1f\n", rp.n, rp.level_db - rtop,
+           sp->level_db - stop, dl, rp.t60_s, sp->t60_s, ratio, rp.cents_off, sp->cents_off);
+  }
+  printf("mean |level difference| %.1f dB over %d partials; T60 typically off by a factor %.2f over %d partials\n",
+         level_count ? level_err / level_count : 0.0, level_count, t60_count ? pow(2.0, t60_log_err / t60_count) : 0.0,
+         t60_count);
+
+  if (ab_path) {
+    auto peak_of = [](const std::vector<float>& v) { float p = 1e-9f; for (float x : v) p = std::max(p, fabsf(x)); return p; };
+    const float target = 0.5f;
+    const float gr = target / peak_of(rec.mono), gs = target / peak_of(syn.mono);
+    std::vector<float> ab;
+    for (float v : rec.mono) { ab.push_back(v * gr); ab.push_back(v * gr); }
+    ab.insert(ab.end(), size_t(rec.rate) * 2 * 7 / 10, 0.0f);
+    for (float v : syn.mono) { ab.push_back(v * gs); ab.push_back(v * gs); }
+    if (WriteWav(ab_path, ab, rec.rate)) printf("A/B written to %s (recording, then synth, both peak-normalised)\n", ab_path);
+  }
+  return 0;
+}
+
+int CmdDrums(int argc, char** argv) {
+  uint32_t rate = argc > 2 ? atoi(argv[2]) : 48000;
+  const char* wav_dir = argc > 3 ? argv[3] : nullptr;  // optional: write one WAV per drum
+  printf("GM drum kit at %u Hz, velocity 100\n", rate);
+  printf("note  name                    peak dBFS   -20dB s  -40dB s\n");
+  for (int note = 27; note <= 87; ++note) {
+    const char* name = synth::instruments::ModalInstrument::DrumName(note);
+    if (!name) continue;
+    Engine e(rate);
+    auto stereo = RenderNote(e, 0, note, 100, 0.1, 2.9);
+    auto mono = ToMono(stereo);
+    float peak = 0;
+    for (float v : mono) peak = std::max(peak, fabsf(v));
+    Decay d = MeasureDecay(mono, rate, 3.0);
+    printf("%4d  %-22s  %8.1f  %8.2f  %7.2f\n", note, name, 20 * log10(peak + 1e-12), d.t20, d.t40);
+    if (wav_dir) {
+      char path[MAX_PATH];
+      sprintf_s(path, "%s\\drum_%02d.wav", wav_dir, note);
+      WriteWav(path, stereo, rate);
+    }
+  }
   return 0;
 }
 
@@ -261,14 +543,24 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "note")) result = CmdNote(argc, argv);
     else if (!strcmp(argv[1], "tune")) result = CmdTune(argc, argv);
     else if (!strcmp(argv[1], "cpu")) result = CmdCpu(argc, argv);
+    else if (!strcmp(argv[1], "drums")) result = CmdDrums(argc, argv);
+    else if (!strcmp(argv[1], "analyze")) result = CmdAnalyze(argc, argv);
+    else if (!strcmp(argv[1], "survey")) result = CmdSurvey(argc, argv);
+    else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
+    else if (!strcmp(argv[1], "compare")) result = CmdCompare(argc, argv);
   }
   if (result == 2) {
     fprintf(stderr,
             "usage:\n"
-            "  DSP_Render render <in.mid> <out.wav> [rate]\n"
+            "  DSP_Render render <in.mid> <out.wav> [rate] [program 1-128 for every part]\n"
             "  DSP_Render note <program 1-128|0=drums> <note> <velocity> <hold_s> <out.wav> [tail_s] [rate]\n"
             "  DSP_Render tune <program> [first_note] [last_note] [step] [rate]\n"
-            "  DSP_Render cpu <program> <voices> [seconds] [rate]\n");
+            "  DSP_Render cpu <program> <voices> [seconds] [rate]\n"
+            "  DSP_Render drums [rate] [wav_dir]\n"
+            "  DSP_Render analyze <recording.wav> [midi_note]\n"
+            "  DSP_Render survey <folder of recordings>\n"
+            "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms]\n"
+            "  DSP_Render compare <program> <recording.wav> [ab_out.wav]\n");
   }
   return result;
 }

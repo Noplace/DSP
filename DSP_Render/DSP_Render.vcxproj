@@ -76,6 +76,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="analysis.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="analysis.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DSP_Lib\DSP_Lib.vcxproj">

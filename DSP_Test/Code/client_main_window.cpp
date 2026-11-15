@@ -335,6 +335,13 @@ void ClientMainWindow::Paint() {
       len += sprintf_s(lines[n] + len, sizeof(lines[n]) - len, " [%s]", midi_input_.port_name(i));
     ++n;
   }
+  {
+    const auto& cal = midi_synth_ ? midi_synth_->calibrated_instruments() : std::vector<std::string>();
+    int len = sprintf_s(lines[n], "Models  %s", cal.empty() ? "no calibration data found (data\\calibration)" : "calibrated from recordings:");
+    for (size_t i = 0; i < cal.size() && len < 200; ++i)
+      len += sprintf_s(lines[n] + len, sizeof(lines[n]) - len, " %s", cal[i].c_str());
+    ++n;
+  }
   sprintf_s(lines[n++], "PC keys Z = %s%d, program %d %s (channel 1)", NoteName(octave_base_), octave_base_ / 12 - 1,
             program_ + 1, GmProgramName(program_));
   const int status_lines = n++;  // bright status lines, then a gap, then dimmer help
