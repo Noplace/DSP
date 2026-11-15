@@ -79,6 +79,15 @@ std::vector<float> Resample(const std::vector<float>& src, double src_rate, doub
   return out;
 }
 
+// s at fractional position pos (Catmull-Rom; zero outside the sample).
+inline float ReadCubic(const float* s, int len, double pos) {
+  const int i = int(pos);
+  const float t = float(pos - i);
+  auto at = [&](int k) { return k >= 0 && k < len ? s[k] : 0.0f; };
+  const float y0 = at(i - 1), y1 = at(i), y2 = at(i + 1), y3 = at(i + 2);
+  return y1 + 0.5f * t * (y2 - y0 + t * (2 * y0 - 5 * y1 + 4 * y2 - y3 + t * (3 * (y1 - y2) + y3 - y0)));
+}
+
 }  // namespace
 
 CalibratedString::CalibratedString(std::shared_ptr<const StringCalibration> calibration,
@@ -91,6 +100,12 @@ CalibratedString::CalibratedString(std::shared_ptr<const StringCalibration> cali
   memset(params_, 0, sizeof(params_));
   memset(after_level_, 0, sizeof(after_level_));
   for (float& r : tuning_ratio_) r = 1.0f;
+  for (int m = 0; m < 128; ++m) {
+    release_src_[m] = -1;
+    release_step_[m] = 1.0;
+    release_t60_[m] = float(options_.release_t60_s);
+    damper_delay_[m] = 0;
+  }
   for (const auto& n : cal_->notes)
     if (!n.layers.empty()) layered_ = true;
 }
@@ -190,6 +205,61 @@ void CalibratedString::BuildTables() {
   std::sort(loud.begin(), loud.end());
   double median_peak = loud[n / 2];
   gain_ = float(options_.level / std::max(1e-6, median_peak));
+  BuildReleases();
+}
+
+// Dampers and key-up sounds from the key-up recordings (calibration version 4). Damper decay and
+// delay are smoothed across the keyboard like the string parameters; notes without measurements
+// keep the default decay and no delay.
+void CalibratedString::BuildReleases() {
+  const auto& notes = cal_->notes;
+  std::vector<double> t60_midi, log_t60, delay;
+  for (const CalibratedNote& c : notes) {
+    if (c.release_t60_s <= 0) continue;
+    t60_midi.push_back(c.midi_note);
+    log_t60.push_back(log(c.release_t60_s));
+    delay.push_back(std::max(0.0f, c.damper_delay_s));
+  }
+  log_t60 = Median3(log_t60);
+  delay = Median3(delay);
+  // Key-up sounds, converted to the synth's rate once per recorded note.
+  releases_.clear();
+  std::vector<size_t> src_note;
+  for (size_t i = 0; i < notes.size(); ++i) {
+    const CalibratedNote& c = notes[i];
+    std::vector<Layer> rel;
+    if (c.layers.empty()) {
+      if (!c.release.empty()) rel.push_back({1.0f, Resample(c.release, c.excitation_rate, sample_rate_, 1.0)});
+    } else {
+      for (const ExcitationLayer& l : c.layers)
+        if (!l.release.empty()) rel.push_back({l.velocity, Resample(l.release, c.excitation_rate, sample_rate_, 1.0)});
+    }
+    if (rel.empty()) continue;
+    // 2 ms fade-in: the sound starts mid-recording (at key-up), so never with a step.
+    const size_t fade = size_t(0.002 * sample_rate_) + 1;
+    for (Layer& l : rel)
+      for (size_t k = 0; k < fade && k < l.samples.size(); ++k)
+        l.samples[k] *= float(0.5 - 0.5 * cos(kPi * k / fade));
+    releases_.push_back(std::move(rel));
+    src_note.push_back(i);
+  }
+  for (int m = 0; m < 128; ++m) {
+    if (!t60_midi.empty()) {
+      release_t60_[m] = float(exp(Interp(t60_midi, log_t60, m)));
+      damper_delay_[m] = int(Interp(t60_midi, delay, m) * sample_rate_ + 0.5);
+    } else {
+      release_t60_[m] = float(options_.release_t60_s);
+      damper_delay_[m] = 0;
+    }
+    release_src_[m] = -1;
+    for (size_t r = 0; r < releases_.size(); ++r)
+      if (release_src_[m] < 0 || abs(notes[src_note[r]].midi_note - m) < abs(notes[src_note[release_src_[m]]].midi_note - m))
+        release_src_[m] = int(r);
+    if (release_src_[m] >= 0) {
+      const CalibratedNote& src = notes[src_note[release_src_[m]]];
+      release_step_[m] = src.f0_hz > 0 ? params_[m].f0_hz / src.f0_hz : 1.0;
+    }
+  }
 }
 
 // Resonator band of note m: the loop's partials up to modal_max_hz, with their decays from the
@@ -329,6 +399,14 @@ int CalibratedString::Load() {
     memset(voice.hp_s, 0, sizeof(voice.hp_s));
     voice.hp_run = 0;
     voice.modes_settled = true;
+    voice.velocity = 1.0f;
+    voice.damp_wait = 0;
+    voice.rel_playing = false;
+    voice.rel_lo = voice.rel_hi = nullptr;
+    voice.rel_len = voice.rel_len_lo = voice.rel_len_hi = 0;
+    voice.rel_pos = 0;
+    voice.rel_step = 1.0;
+    voice.rel_w_lo = voice.rel_w_hi = 0;
   }
   dc_coef_ = float(1.0 - 2.0 * kPi * 20.0 / sample_rate_);
   level_decay_ = float(exp(-1.0 / (0.05 * sample_rate_)));
@@ -342,6 +420,8 @@ int CalibratedString::Unload() {
   delete[] voices_;
   voices_ = nullptr;
   for (auto& l : layers_) std::vector<Layer>().swap(l);
+  std::vector<std::vector<Layer>>().swap(releases_);
+  for (int& r : release_src_) r = -1;
   loaded_ = false;
   return S_OK;
 }
@@ -383,43 +463,17 @@ int CalibratedString::NoteOn(int v) {
   // Velocity: crossfade the two layers around it; below the softest layer, fade it down.
   const std::vector<Layer>& layers = layers_[note];
   const float vel = layered_ ? std::max(0.0f, std::min(1.0f, float(nd.velocity))) : 1.0f;
-  size_t hi = 0;
-  while (hi < layers.size() && layers[hi].velocity < vel) ++hi;
-  size_t mode_lo = 0, mode_hi = 0;
-  float mode_t = 0;
-  if (hi == 0) {
-    float lowest = layers[0].velocity;
-    float t = lowest > 0 ? vel / lowest : 1.0f;  // 0..1 below the softest layer
-    float db = (1.0f - t) * options_.min_velocity_gain_db;
-    voice.exc_lo = voice.exc_hi = layers[0].samples.data();
-    voice.len_lo = voice.len_hi = int(layers[0].samples.size());
-    voice.w_lo = powf(10.0f, db / 20.0f);
-    voice.w_hi = 0;
-    mode_lo = mode_hi = 0;
-  } else if (hi == layers.size()) {
-    const Layer& top = layers.back();
-    voice.exc_lo = voice.exc_hi = top.samples.data();
-    voice.len_lo = voice.len_hi = int(top.samples.size());
-    voice.w_lo = 1.0f;
-    voice.w_hi = 0;
-    mode_lo = mode_hi = layers.size() - 1;
-  } else {
-    const Layer& a = layers[hi - 1];
-    const Layer& b = layers[hi];
-    float t = (vel - a.velocity) / std::max(1e-6f, b.velocity - a.velocity);
-    voice.exc_lo = a.samples.data();
-    voice.len_lo = int(a.samples.size());
-    voice.exc_hi = b.samples.data();
-    voice.len_hi = int(b.samples.size());
-    voice.w_lo = 1.0f - t;
-    voice.w_hi = t;
-    mode_lo = hi - 1;
-    mode_hi = hi;
-    mode_t = t;
-  }
-  voice.w_lo *= gain_;
-  voice.w_hi *= gain_;
-  StartModes(voice, note, mode_lo, mode_hi, mode_t, target);
+  const LayerMix mix = MixLayers(layers, vel);
+  voice.exc_lo = layers[mix.lo].samples.data();
+  voice.len_lo = int(layers[mix.lo].samples.size());
+  voice.exc_hi = layers[mix.hi].samples.data();
+  voice.len_hi = int(layers[mix.hi].samples.size());
+  voice.w_lo = mix.w_lo * gain_;
+  voice.w_hi = mix.w_hi * gain_;
+  StartModes(voice, note, mix.lo, mix.hi, mix.t, target);
+  voice.velocity = vel;
+  voice.damp_wait = 0;
+  voice.rel_playing = false;
   voice.exc_pos = 0;
   voice.dc_x1 = voice.dc_y1 = 0;
   voice.level = 1.0f;
@@ -429,18 +483,64 @@ int CalibratedString::NoteOn(int v) {
   return S_OK;
 }
 
+CalibratedString::LayerMix CalibratedString::MixLayers(const std::vector<Layer>& layers, float vel) const {
+  LayerMix mix = {0, 0, 1.0f, 0.0f, 0.0f};
+  size_t hi = 0;
+  while (hi < layers.size() && layers[hi].velocity < vel) ++hi;
+  if (hi == 0) {
+    const float lowest = layers.empty() ? 0.0f : layers[0].velocity;
+    const float t = lowest > 0 ? vel / lowest : 1.0f;  // 0..1 below the softest layer
+    mix.w_lo = powf(10.0f, (1.0f - t) * options_.min_velocity_gain_db / 20.0f);
+  } else if (hi == layers.size()) {
+    mix.lo = mix.hi = layers.size() - 1;
+  } else {
+    const float t = (vel - layers[hi - 1].velocity) / std::max(1e-6f, layers[hi].velocity - layers[hi - 1].velocity);
+    mix = {hi - 1, hi, 1.0f - t, t, t};
+  }
+  return mix;
+}
+
 int CalibratedString::NoteOff(int v) {
   Voice& voice = voices_[v];
   if (!voice.active)
     return S_OK;
   voice.released = true;
   if (voice.note >= options_.undamped_from_note)
-    return S_OK;  // no damper on this string: it rings on
+    return S_OK;  // no damper on this string: it rings on, and no damper sound
+  // Key-up sound, unless the key came up earlier (pedal) or is being struck again.
+  const int src = release_src_[voice.note];
+  if (src >= 0 && options_.release_level > 0 && !cdata_->note_data_array[v].quiet_release) {
+    const std::vector<Layer>& rel = releases_[src];
+    const LayerMix mix = MixLayers(rel, layered_ ? voice.velocity : 1.0f);
+    const float g = gain_ * float(options_.release_level);
+    voice.rel_lo = rel[mix.lo].samples.data();
+    voice.rel_len_lo = int(rel[mix.lo].samples.size());
+    voice.rel_hi = rel[mix.hi].samples.data();
+    voice.rel_len_hi = int(rel[mix.hi].samples.size());
+    voice.rel_len = std::max(voice.rel_len_lo, mix.w_hi != 0 ? voice.rel_len_hi : 0);
+    voice.rel_w_lo = mix.w_lo * g;
+    voice.rel_w_hi = mix.w_hi * g;
+    voice.rel_step = release_step_[voice.note];
+    voice.rel_pos = 0;
+    voice.rel_playing = voice.rel_len > 0;
+  }
+  // The dampers reach the string a moment after the key comes up.
+  if (damper_delay_[voice.note] > 0)
+    voice.damp_wait = damper_delay_[voice.note];
+  else
+    Damp(voice);
+  return S_OK;
+}
+
+// Dampers on the string: the loop and every resonator decay with the note's damper T60 from now on.
+void CalibratedString::Damp(Voice& voice) {
+  voice.damp_wait = 0;
+  const double t60 = std::max(0.005, double(release_t60_[voice.note]));
   const double f = voice.freq > 0 ? voice.freq : NoteHz(voice.note);
-  const float damp = ReleaseGain(f, options_.release_t60_s);
+  const float damp = ReleaseGain(f, t60);
   voice.loop.SetLossGain(voice.base_gain * damp);
   if (voice.two_strings) voice.loop_b.SetLossGain(voice.base_gain_b * damp);
-  const float r_release = float(exp(-kLn1000 / (std::max(0.005, double(options_.release_t60_s)) * sample_rate_)));
+  const float r_release = float(exp(-kLn1000 / (t60 * sample_rate_)));
   for (int i = 0; i < voice.modes; ++i) {
     voice.m_rt[i] = std::min(voice.m_rt[i], r_release);
     if (voice.m_r[i] <= r_release) continue;
@@ -449,7 +549,6 @@ int CalibratedString::NoteOff(int v) {
     voice.m_pr[i] *= k;
     voice.m_pi[i] *= k;
   }
-  return S_OK;
 }
 
 void CalibratedString::BendFrequency(real_t freq, int v) {
@@ -528,11 +627,24 @@ real_t CalibratedString::Tick(int v) {
     out += sum;
   }
 
+  // Key-up: the dampers' delay, and the recorded key-up sound (already radiated sound, so it goes
+  // straight to the output rather than into the string).
+  if (voice.damp_wait > 0 && --voice.damp_wait == 0)
+    Damp(voice);
+  if (voice.rel_playing) {
+    const double p = voice.rel_pos;
+    float s = ReadCubic(voice.rel_lo, voice.rel_len_lo, p) * voice.rel_w_lo;
+    if (voice.rel_w_hi != 0) s += ReadCubic(voice.rel_hi, voice.rel_len_hi, p) * voice.rel_w_hi;
+    out += s;
+    voice.rel_pos = p + voice.rel_step;
+    if (voice.rel_pos >= voice.rel_len) voice.rel_playing = false;
+  }
+
   float o = out - voice.dc_x1 + dc_coef_ * voice.dc_y1;
   voice.dc_x1 = out; voice.dc_y1 = o;
   float mag = fabsf(o);
   voice.level = mag > voice.level ? mag : voice.level * level_decay_;
-  if (voice.level < 1e-5f && !exciting)
+  if (voice.level < 1e-5f && !exciting && !voice.rel_playing && voice.damp_wait == 0)
     voice.active = false;
   return o;
 }

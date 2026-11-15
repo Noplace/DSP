@@ -42,6 +42,10 @@ struct ExcitationLayer {
   float peak = 0;                 // peak level of that recording
   std::vector<float> samples;     // excitation at CalibratedNote::excitation_rate
   std::vector<PartialDecay> partials;  // version 3: partial n at index n - 1, at this velocity
+  // Version 4: the key-up sound of a note played at this velocity (damper thump, key and hammer
+  // return), from key-up on, with the string itself removed (the instrument plays its own string
+  // through the damping). At CalibratedNote::excitation_rate; empty = not recorded.
+  std::vector<float> release;
 };
 
 // Parameters measured from one recorded note of a real instrument.
@@ -62,6 +66,11 @@ struct CalibratedNote {
   // Version 3: per-partial decays (of `excitation`'s recording; layered notes have them per layer).
   // They replace the second string above, which calibrations with them leave off (after_level 0).
   std::vector<PartialDecay> partials;
+  // Version 4: the dampers, measured from key-up recordings. After key-up the string rings on for
+  // damper_delay_s, then decays with release_t60_s (0 = not measured: the instrument's default).
+  float release_t60_s = 0;
+  float damper_delay_s = 0;
+  std::vector<float> release;  // key-up sound of `excitation`'s recording (layered notes: per layer)
 };
 
 // A calibrated string instrument: one entry per recorded note, sorted by MIDI note.

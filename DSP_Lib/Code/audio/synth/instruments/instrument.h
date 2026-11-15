@@ -114,14 +114,18 @@ class InstrumentProcessor : public Component {
     nd.note = note;
     nd.velocity = velocity;
     nd.on = true;
+    nd.quiet_release = false;
     SetFrequency(freq, v);
     NoteOn(v);
   }
-  void ReleaseVoice(int v) {
+  // quiet: the key did not come up just now (sustain pedal lifted, re-strike, all notes off), so
+  // instruments with a key-up sound (piano dampers) leave it out.
+  void ReleaseVoice(int v, bool quiet = false) {
     auto& nd = data_->note_data_array[v];
     if (!nd.on)
       return;
     nd.on = false;
+    nd.quiet_release = quiet;
     NoteOff(v);
   }
   uint32_t voice_generation(int v) const { return voice_gen_[v]; }
