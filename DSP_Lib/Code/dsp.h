@@ -77,6 +77,7 @@
 #include "audio/synth/instruments/calibrated_string.h"
 //#include "audio/synth/instruments/sonant_program.h"
 //#include "audio/synth/instruments/waveguide_synthesis.h"
+#include "audio/synth/song.h"
 #include "audio/synth/channel.h"
 #include "audio/synth/midi_synth.h"
 #include "audio/synth/wave_synth.h"

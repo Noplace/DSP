@@ -201,6 +201,22 @@ bool Ui::Knob(const Rect& r, const ParamInfo& info, std::atomic<float>* v, Color
   return changed;
 }
 
+bool Ui::ValueBox(const Rect& r, const ParamInfo& info, std::atomic<float>* v, Color accent, const char* label) {
+  const WidgetId id = Id(v, 3);
+  const bool changed = DragValue(id, r, info, v, 200.0f);
+  const float value = v->load(std::memory_order_relaxed);
+  const bool engaged = hot == id || active == id;
+  const bool off_default = fabsf(value - info.def) > 1e-4f;
+  g.FillRound(r, 4, engaged ? theme::kPanel3 : theme::kPanel2);
+  g.StrokeRound(r, 4, off_default ? accent : theme::kLine);
+  char text[32], line[64];
+  FormatParam(info, value, text, sizeof(text));
+  snprintf(line, sizeof(line), "%s %s", label, text);
+  g.Text(line, r, off_default ? accent : theme::kText, 11, Align::kCenter, off_default);
+  if (engaged && active != id) Tooltip("Drag up/down or wheel; double-click resets", r.cx(), r.y);
+  return changed;
+}
+
 bool Ui::Fader(const Rect& r, const ParamInfo& info, std::atomic<float>* v, Color accent) {
   const WidgetId id = Id(v);
   const float track_h = r.h - 16;

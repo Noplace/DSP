@@ -142,6 +142,7 @@ void ClientMainWindow::OpenMidi(const char* path, bool autoplay) {
     ShowMessage("File not found: " + full, true);
     return;
   }
+  if (recording_) StopRecording();
   // Loading replaces the synth's track data, so keep the audio thread out while it happens.
   synth_player_->WithSynthLocked([&] { midi_synth_->LoadMidiFromFile(full.c_str()); });
   if (!midi_synth_->song().loaded || synth_player_->song_length_ms <= 0) {
@@ -151,22 +152,14 @@ void ClientMainWindow::OpenMidi(const char* path, bool autoplay) {
   midi_path_ = full;
   session_path_.clear();  // a new song is not the old session any more
   strncpy_s(midi_name_, FileName(full).c_str(), _TRUNCATE);
-
-  // Track view rows and strip names.
-  const auto& song = midi_synth_->song();
-  visible_tracks_.clear();
-  for (auto& n : strip_names_) n.clear();
-  for (int t = 0; t < int(song.tracks.size()); ++t) {
-    const auto& track = song.tracks[t];
-    if (track.notes.empty()) continue;
-    visible_tracks_.push_back(t);
-    for (int ch = 0; ch < 16; ++ch) {
-      if (!(track.channel_mask & (1 << ch)) || !strip_names_[ch].empty()) continue;
-      bool has_notes = false;
-      for (auto& n : track.notes) if (n.channel == ch) { has_notes = true; break; }
-      if (has_notes) strip_names_[ch] = track.name.empty() ? std::string("Track ") + std::to_string(t + 1) : track.name;
-    }
-  }
+  undo_.clear();
+  redo_.clear();
+  markers_.clear();
+  midi_synth_->set_loop(false, 0, 0);
+  song_modified_ = false;
+  ++song_gen_;
+  editor_track_ = -1;
+  RefreshTrackLists();
   track_scroll_y_ = 0;
   ZoomToFit();
   char title[MAX_PATH + 64];
@@ -180,6 +173,19 @@ void ClientMainWindow::OpenMidi(const char* path, bool autoplay) {
 // ---------------------------------------------------------------------------------------------
 bool ClientMainWindow::SaveSession(const char* path) {
   auto& mixer = midi_synth_->mixer;
+  // An edited or new song goes into its own MIDI file next to the session; the original file
+  // is never overwritten.
+  const auto& song = midi_synth_->song();
+  if (song.loaded && (song_modified_ || midi_path_.empty()) && song.TotalNotes() > 0) {
+    const std::string song_path = ReplaceExtension(FullPath(path), ".song.mid");
+    if (!SaveSongAsMidi(song, song_path.c_str())) {
+      ShowMessage("Could not write the song to " + song_path, true);
+      return false;
+    }
+    midi_path_ = song_path;
+    strncpy_s(midi_name_, FileName(song_path).c_str(), _TRUNCATE);
+    song_modified_ = false;
+  }
   IniFile ini;
   auto& s = ini.Add("session");
   s.Set("version", 1);
@@ -200,6 +206,18 @@ bool ClientMainWindow::SaveSession(const char* path) {
     if (solo) section.Set("solo", 1);
   }
   WriteMasterParams(ini.Add("master"), mixer.master());
+  auto& transport = ini.Add("transport");
+  transport.Set("speed", midi_synth_->speed());
+  transport.Set("metronome", midi_synth_->metronome() ? 1 : 0);
+  transport.Set("count_in", count_in_ ? 1 : 0);
+  transport.Set("loop", midi_synth_->loop_on() ? 1 : 0);
+  transport.Set("loop_start_ms", midi_synth_->loop_start_ms());
+  transport.Set("loop_end_ms", midi_synth_->loop_end_ms());
+  for (size_t i = 0; i < markers_.size(); ++i) {
+    auto& m = ini.Add("marker " + std::to_string(i + 1));
+    m.Set("ms", markers_[i].ms);
+    m.Set("name", markers_[i].name);
+  }
   if (!ini.Save(path, "DSP Studio session")) {
     ShowMessage(std::string("Could not save ") + path, true);
     return false;
@@ -246,6 +264,21 @@ bool ClientMainWindow::LoadSession(const char* path) {
     midi_synth_->set_track_solo(t, section && section->GetNumber("solo", 0) != 0);
   }
   selected_strip_ = std::clamp(int(s.GetNumber("selected_strip", 0)) - 1, -1, 15);
+  if (const auto* transport = ini.Find("transport")) {
+    const double speed = std::clamp(transport->GetNumber("speed", 1.0), 0.5, 1.5);
+    midi_synth_->set_speed(speed);
+    speed_param_ = float(speed);
+    midi_synth_->set_metronome(transport->GetNumber("metronome", 0) != 0);
+    count_in_ = transport->GetNumber("count_in", 0) != 0;
+    midi_synth_->set_loop(transport->GetNumber("loop", 0) != 0, transport->GetNumber("loop_start_ms", 0),
+                          transport->GetNumber("loop_end_ms", 0));
+  }
+  markers_.clear();
+  for (int i = 1;; ++i) {
+    const auto* m = ini.Find("marker " + std::to_string(i));
+    if (!m) break;
+    markers_.push_back({m->GetNumber("ms", 0), m->Get("name") ? *m->Get("name") : "M" + std::to_string(i)});
+  }
   session_path_ = FullPath(path);
   if (!midi.empty() && !loaded) ShowMessage("Session loaded, but its MIDI file was not found: " + midi, true);
   else ShowMessage("Loaded session " + FileName(path));
@@ -313,12 +346,12 @@ void ClientMainWindow::PromptLoadChain() {
 // ---------------------------------------------------------------------------------------------
 void ClientMainWindow::PromptExport() {
   if (exporter_.busy()) return;
-  if (midi_path_.empty()) {
-    ShowMessage("Open a MIDI file first", true);
+  if (midi_synth_->song().TotalNotes() == 0) {
+    ShowMessage("Nothing to export yet: open a MIDI file or record/draw some notes", true);
     return;
   }
   char path[MAX_PATH] = {};
-  strncpy_s(path, ReplaceExtension(midi_path_, ".wav").c_str(), _TRUNCATE);
+  strncpy_s(path, midi_path_.empty() ? "Untitled.wav" : ReplaceExtension(midi_path_, ".wav").c_str(), _TRUNCATE);
   if (!PromptForFile(true, "WAV audio (*.wav)\0*.wav\0", "wav", "Export WAV (24-bit)", path, sizeof(path)))
     return;
   // The settings are copied now: changes made while it renders do not affect this export.
@@ -328,6 +361,20 @@ void ClientMainWindow::PromptExport() {
   settings->wav_path = path;
   settings->sample_rate = synth_player_->output().sample_rate() ? synth_player_->output().sample_rate() : 48000;
   exporter_.Start(*settings);
+}
+
+void ClientMainWindow::PromptExportMidi() {
+  const auto& song = midi_synth_->song();
+  if (!song.loaded || song.TotalNotes() == 0) {
+    ShowMessage("Nothing to export yet: open a MIDI file or record/draw some notes", true);
+    return;
+  }
+  char path[MAX_PATH] = {};
+  strncpy_s(path, midi_path_.empty() ? "Untitled.mid" : ReplaceExtension(midi_path_, " (edited).mid").c_str(), _TRUNCATE);
+  if (!PromptForFile(true, "MIDI files (*.mid)\0*.mid\0", "mid", "Export MIDI file", path, sizeof(path)))
+    return;
+  if (SaveSongAsMidi(song, path)) ShowMessage("Exported " + FileName(path));
+  else ShowMessage(std::string("Could not write ") + path, true);
 }
 
 void ClientMainWindow::PollExport() {

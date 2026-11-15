@@ -61,6 +61,8 @@ class Synth : public Component {
   virtual void AllNotesOff() {}
   // Move file playback to a position (ms). Only call with the audio thread kept out.
   virtual void Seek(double ms) {}
+  // Current song position (ms), or < 0 if the synth does not track it.
+  virtual double PlaybackMs() const { return -1.0; }
  protected:
 };
 

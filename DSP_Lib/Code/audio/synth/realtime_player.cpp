@@ -98,6 +98,10 @@ void RealtimePlayer::Seek(double seconds) {
 }
 
 double RealtimePlayer::GetPlaybackSeconds() const {
+  if (synth_ != nullptr) {  // synths that track the song position (loops, speed) know best
+    const double ms = synth_->PlaybackMs();
+    if (ms >= 0) return ms / 1000.0;
+  }
   auto rate = output_.sample_rate();
   return rate ? double(frames_played_.load()) / rate : 0.0;
 }
@@ -128,12 +132,19 @@ void RealtimePlayer::Render(float* stereo_out, uint32_t frames) {
   }
   state_ = new_state;
 
-  // Live input, applied at the start of the buffer (up to one period of timing jitter).
+  // Live input, applied at the start of the buffer (up to one period of timing jitter). While
+  // recording, each message is also passed to the UI with the song position it arrived at.
+  const bool record = recording_ && new_state == kStatePlaying;
+  const double song_ms = record ? synth_->PlaybackMs() : 0.0;
+  auto live = [&](uint32_t message) {
+    if (record) record_queue_.Push({message, song_ms});
+    DispatchMidi(message);
+  };
   if (midi_input_ != nullptr)
-    midi_input_->Drain([this](uint32_t message) { DispatchMidi(message); });
+    midi_input_->Drain(live);
   uint32_t message;
   while (ui_queue_.Pop(message))
-    DispatchMidi(message);
+    live(message);
 
   if (new_state == kStatePlaying) {
     synth_->RenderSamplesStereo(frames, stereo_out);

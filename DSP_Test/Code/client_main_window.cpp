@@ -180,7 +180,15 @@ void ClientMainWindow::Start() {
 
   // Low-latency WASAPI output; the synth runs at the device's sample rate.
   synth_player_ = new dsp::audio::synth::RealtimePlayer();
-  if (!synth_player_->Initialize(midi_synth_)) {
+  // Opening the device and building the instrument bank (calibrated piano and harpsichord
+  // included) takes a few seconds: do it on a worker thread behind a splash window.
+  bool audio_ok = false;
+  {
+    Splash splash;
+    splash.Show("Opening the audio device and loading instruments...");
+    splash.RunWhile([&] { audio_ok = synth_player_->Initialize(midi_synth_); });
+  }
+  if (!audio_ok) {
     MessageBoxA(handle_, synth_player_->last_error(), "Could not open audio device", MB_ICONERROR);
   }
   // In the studio, files get the reverb/chorus they ask for (CC91/CC93) unless switched off.
@@ -252,18 +260,26 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
 
   const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
-  if (ctrl) {
+  if (EditorKey(key, ctrl, shift)) {
+    // the piano roll used it (delete, select all, quantize, transpose, nudge)
+  } else if (ctrl) {
     if (!repeat) {
       if (key == 'O') PromptAndOpen();
+      else if (key == 'N') NewSong();
       else if (key == 'S') PromptSaveSession(shift);  // Ctrl+Shift+S = save as
       else if (key == 'E') PromptExport();
+      else if (key == 'R') { if (recording_) StopRecording(); else StartRecording(); }
+      else if (key == 'L') ToggleLoop();
+      else if (key == 'M') AddMarker();
+      else if (key == 'Z') { if (shift) Redo(); else Undo(); }
+      else if (key == 'Y') Redo();
     }
   } else if (key == VK_SHIFT) {
     if (!repeat) SendLive(0xB0, 64, 127);  // sustain pedal down
   } else if (key == VK_SPACE) {
     if (!repeat) synth_player_->TogglePause();
   } else if (key == VK_ESCAPE) {
-    if (picker_open_) picker_open_ = false;
+    if (picker_open_ || export_menu_open_) picker_open_ = export_menu_open_ = false;
     else synth_player_->Stop();
   } else if (key == VK_HOME) {
     Seek(0);
@@ -424,7 +440,9 @@ void ClientMainWindow::OnTimer() {
   for (auto& m : strip_meter_)
     active = active || m.hold[0] > -89.0f || m.hold[1] > -89.0f || m.gr_db < -0.05f;
   PollExport();
-  active = active || exporter_.busy() || (!message_.empty() && now < message_until_ + 0.1);
+  PollRecording();
+  active = active || exporter_.busy() || recording_ || midi_synth_->counting_in() ||
+           (!message_.empty() && now < message_until_ + 0.1);
   if (!message_.empty() && now > message_until_) message_.clear();
   if (active) last_active_ = now;
   // keep drawing a little after activity so the analyser and peak holds settle
@@ -445,18 +463,22 @@ void ClientMainWindow::Render() {
   const float ins_w = W >= 1440 ? 480.0f : 440.0f;
   const float body_y = top_h, body_h = H - top_h - status_h;
   const float left_w = W - ins_w;
-  const float mixer_h = std::clamp(body_h * 0.42f, 290.0f, 380.0f);
+  // the piano roll gets a bit more height than the track view
+  const float mixer_h = editor_track_ >= 0 ? std::clamp(body_h * 0.36f, 250.0f, 360.0f) : std::clamp(body_h * 0.42f, 290.0f, 380.0f);
 
   if (synth_player_ != nullptr && midi_synth_ != nullptr) {
-    ui_.SetModal(picker_open_);  // the panels below are inert while the popup is up
+    const bool popup = picker_open_ || export_menu_open_;
+    ui_.SetModal(popup);  // the panels below are inert while a popup is up
     DrawTopBar(Rect(0, 0, W, top_h));
-    DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h));
+    if (editor_track_ >= 0) DrawPianoRoll(Rect(0, body_y, left_w, body_h - mixer_h));
+    if (editor_track_ < 0) DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h));
     DrawMixer(Rect(0, body_y + body_h - mixer_h, left_w, mixer_h));
     DrawInspector(Rect(left_w, body_y, ins_w, body_h));
-    if (picker_open_) {
+    if (popup) {
       ui_.SetModal(true);
       ui_.BeginModal();
-      DrawInstrumentPicker(picker_anchor_);
+      if (picker_open_) DrawInstrumentPicker(picker_anchor_);
+      if (export_menu_open_) DrawExportMenu(export_menu_anchor_);
       ui_.EndModal();
     }
     ui_.SetModal(false);

@@ -105,6 +105,7 @@
     <ClInclude Include="Code\audio\synth\instruments\calibration.h" />
     <ClInclude Include="Code\audio\synth\instruments\calibrated_string.h" />
     <ClInclude Include="Code\audio\synth\midi_synth.h" />
+    <ClInclude Include="Code\audio\synth\song.h" />
     <ClInclude Include="Code\audio\synth\misc.h" />
     <ClInclude Include="Code\audio\synth\oscillators\exp_oscillator.h" />
     <ClInclude Include="Code\audio\synth\oscillators\oscillator.h" />
@@ -142,6 +143,7 @@
     <ClCompile Include="Code\audio\synth\instruments\calibrated_string.cpp" />
     <ClCompile Include="Code\audio\synth\midi_synth.cpp" />
     <ClCompile Include="Code\audio\synth\effects\mixer.cpp" />
+    <ClCompile Include="Code\audio\synth\song.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\exp_oscillator.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\sawtooth_oscillator.cpp" />
     <ClCompile Include="Code\audio\synth\oscillators\sine_oscillator.cpp" />

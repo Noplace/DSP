@@ -15,6 +15,7 @@ void ExportSettings::CaptureFrom(MidiSynth& synth) {
     track_mute[t] = synth.track_muted(t);
     track_solo[t] = synth.track_solo(t);
   }
+  song = synth.song();
 }
 
 bool Exporter::Start(const ExportSettings& settings) {
@@ -119,10 +120,10 @@ void Exporter::Run(ExportSettings s) {
     for (int id = 0; id < kStripParamCount; ++id) synth.mixer.strip(st).set(id, s.strip[st][id]);
   for (int id = 0; id < kMasterParamCount; ++id) synth.mixer.master().set(id, s.master[id]);
   synth.mixer.set_follow_midi_sends(s.follow_midi_sends);
-  synth.LoadMidiFromFile(s.midi_path.c_str());
-  host.stopped = false;  // LoadMidi stops the (offline) transport
+  synth.InstallSong(MidiSynth::PrepareSong(s.song), -1.0);  // the song as edited, not the file
+  host.stopped = false;  // installing stops the (offline) transport
   const double length_ms = host.song_length_ms;
-  if (length_ms <= 0) return finish(kFailed, "Export failed: could not read " + s.midi_path);
+  if (length_ms <= 0) return finish(kFailed, "Export failed: the song has no notes");
   for (int t = 0; t < 64; ++t) {
     synth.set_track_muted(t, s.track_mute[t]);
     synth.set_track_solo(t, s.track_solo[t]);

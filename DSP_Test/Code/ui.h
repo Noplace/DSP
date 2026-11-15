@@ -76,6 +76,9 @@ class Ui {
   // Rotary knob: drag up/down (Shift = fine), wheel, double-click = default.
   bool Knob(const Rect& r, const dsp::audio::synth::effects::ParamInfo& info, std::atomic<float>* v, Color accent,
             const char* label = nullptr, bool show_value = true);
+  // Compact "label value" box: drag up/down, wheel, double-click = default.
+  bool ValueBox(const Rect& r, const dsp::audio::synth::effects::ParamInfo& info, std::atomic<float>* v, Color accent,
+                const char* label);
   // Vertical fader for a level parameter.
   bool Fader(const Rect& r, const dsp::audio::synth::effects::ParamInfo& info, std::atomic<float>* v, Color accent);
 

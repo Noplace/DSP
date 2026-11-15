@@ -304,18 +304,11 @@ void MidiSynth::Initialize() {
   tracks = nullptr;
 
   if (mode_ == kModeTest) {
-    track_count_ = 1;
-    tracks = new Track[track_count_];
+    track_store_.resize(1);
+    track_store_[0].events.resize(20);
+    BindTracks();
     bpm = 120; //qn per min
     channels[0]->set_silence(false);
-    uint32_t max_event_count = 0;
-    for (int track_index=0;track_index<track_count_;++track_index) {
-        auto& track = tracks[track_index];
-        tracks[track_index].event_count = 20;
-        tracks[track_index].event_sequence = new midi::Event[tracks[track_index].event_count];
-        tracks[track_index].event_index = 0;
-        max_event_count = max(max_event_count,tracks[track_index].event_count);
-    }
   }
   InitializeCriticalSection(&me_lock);
   initialized_ = true;
@@ -355,244 +348,61 @@ void MidiSynth::LoadMidiFromFile(const char* filename) {
 void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
   if (mode_ == kModeTest)
     return;
-  player_->Stop();
-  // Every file starts from GM defaults, not from where the previous file left the channels.
-  AllNotesOff();
-  ResetChannelsToDefaults();
-
   midi::MidiLoader midifile;
   midifile.Load(data,data_size);
-  
-  DestroyTrackData();
-  track_count_ = midifile.track_count;
-  tracks = new Track[track_count_];
-  ticks_per_beat = midifile.ticksPerBeat;
-  bpm = 120; //qn per min
-  double bps = bpm / 60.0;
-  double secs_per_tick;
-  double time_ms;
-  secs_per_tick = 1 / ( bps * ticks_per_beat );
-  player_->song_length_ms = 0;   
-
-
-  uint32_t max_event_count = 0;
-  for (int track_index=0;track_index<track_count_;++track_index) {
-      auto& track = tracks[track_index];
-      tracks[track_index].event_count = (uint32_t)midifile.eventList[track_index].size();
-      tracks[track_index].event_sequence = new midi::Event[tracks[track_index].event_count];
-      max_event_count = max(max_event_count,tracks[track_index].event_count);
-  }
-  //ResetTracks();
-  //uint32_t abs_time[64];
-  //memset(abs_time,0,sizeof(abs_time));
-  
-  for (uint32_t event_index=0;event_index<max_event_count;++event_index) {
-    int track_index=0;
-    for (track_index=0;track_index<track_count_;++track_index) {
-      auto& track = tracks[track_index];
-      if (event_index >= tracks[track_index].event_count)
-        continue;
-      auto source_event = &midifile.eventList[track_index][event_index];
-
-      switch (source_event->subtype) {
-        case midi::kEventSubtypeNoteOff:
-          if (source_event->data.note.velocity == 0)
-            source_event->data.note.velocity = 127;
-        break;
-
-        case midi::kEventSubtypeSetTempo:
-          bpm = 60000000.0 / double(source_event->data.tempo.microsecondsPerBeat);
-          bps = bpm / 60.0;
-          secs_per_tick = 1 / ( bps * ticks_per_beat );
-        break;
-
-        case midi::kEventSubtypeProgramChange:
-
-          if (source_event->channel == 9) {
-            drum_kit_->Load();
-          } else {
-            instr[source_event->data.program.number]->Load();
-          }
-        break;
-      }
-
-      auto& current_event = tracks[track_index].event_sequence[event_index];
-      memset(&current_event,0,sizeof(midi::Event));
-      //abs_time[track_index] += source_event->deltaTime;
-      double prev_abs_time_ms = event_index == 0?0.0:tracks[track_index].event_sequence[event_index-1].abs_time_ms;
-      time_ms = secs_per_tick * 1000 * source_event->deltaTime;
-      current_event.abs_time_ms = prev_abs_time_ms+time_ms;
-      current_event.deltaTime = source_event->deltaTime;
-      current_event.type = source_event->type;
-      current_event.subtype = source_event->subtype;
-      current_event.channel = source_event->channel;
-      current_event.track = source_event->track;
-      channels[source_event->channel]->set_silence(false);
-      memcpy(&current_event.data,&source_event->data,sizeof(current_event.data));
-      
-      #ifdef OUTPUT_EVENTS
-        char str[512];
-        sprintf(str,"time\t%04.03f\ttype : %s\t%02d\t%s\ttrack %02d\tchannel %02d\n",time_ms,eventnames[source_event->type],source_event->subtype,subeventnames[source_event->subtype],source_event->track,source_event->channel);
-        OutputDebugString(str);
-      #endif
-      if (current_event.subtype == midi::kEventSubtypeProgramChange) {
-        char str[512];
-        sprintf_s(str,"time %04.03f type : %s %s track %d channel %d",time_ms,eventnames[source_event->type],subeventnames[source_event->subtype],source_event->track,source_event->channel);
-        OutputDebugString(str);
-        sprintf_s(str,"[data: %d]\n",current_event.data.program.number);
-        OutputDebugString(str);
-      }
-      /*if (current_event.subtype == midi::kEventSubtypeController) {
-        sprintf(str,"time %04.03f type : %s %s track %d channel %d\n",time_ms,eventnames[source_event->type],eventnames[source_event->subtype],source_event->track,source_event->channel);
-        OutputDebugString(str);
-        sprintf(str,"\tdata: %d %d\n",current_event.data.controller.type,current_event.data.controller.value);
-        OutputDebugString(str);
-      }*/
-    }
-    
-  } 
-
-  // Absolute event times and song length. Tempo changes can live on any track (usually
-  // track 0) and apply to all tracks from their tick onwards, so build a time-ordered tempo
-  // map first, then convert each event's absolute tick to milliseconds through it.
-  {
-    struct TempoChange { uint64_t tick; uint32_t us_per_beat; };
-    std::vector<TempoChange> tempo_map;
-    for (int t = 0; t < track_count_; ++t) {
-      uint64_t tick = 0;
-      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
-        auto& ev = tracks[t].event_sequence[e];
-        tick += ev.deltaTime;
-        if (ev.subtype == midi::kEventSubtypeSetTempo && ev.data.tempo.microsecondsPerBeat != 0)
-          tempo_map.push_back({tick, ev.data.tempo.microsecondsPerBeat});
-      }
-    }
-    std::stable_sort(tempo_map.begin(), tempo_map.end(),
-                     [](const TempoChange& a, const TempoChange& b) { return a.tick < b.tick; });
-
-    const double tpb = ticks_per_beat ? double(ticks_per_beat) : 480.0;
-    auto tick_to_ms = [&](uint64_t tick) {
-      double ms = 0;
-      uint64_t last_tick = 0;
-      uint32_t us_per_beat = 500000;  // 120 bpm until the first tempo event
-      for (auto& tc : tempo_map) {
-        if (tc.tick > tick) break;
-        ms += double(tc.tick - last_tick) * us_per_beat / (1000.0 * tpb);
-        last_tick = tc.tick;
-        us_per_beat = tc.us_per_beat;
-      }
-      return ms + double(tick - last_tick) * us_per_beat / (1000.0 * tpb);
-    };
-
-    player_->song_length_ms = 0;
-    for (int t = 0; t < track_count_; ++t) {
-      uint64_t tick = 0;
-      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
-        auto& ev = tracks[t].event_sequence[e];
-        tick += ev.deltaTime;
-        ev.abs_time_ms = tick_to_ms(tick);
-        // Ignore trailing meta events (end-of-track can carry a long delta) for the length.
-        if (ev.type == midi::kEventTypeChannel)
-          player_->song_length_ms = max(player_->song_length_ms, ev.abs_time_ms);
-      }
-    }
-
-    // Tempo map and bar/beat grid for the UI.
-    song_ = SongInfo();
-    song_.length_ms = player_->song_length_ms;
-    if (tempo_map.empty() || tempo_map[0].tick != 0)
-      song_.tempo.push_back({0.0, 120.0});
-    for (auto& tc : tempo_map)
-      song_.tempo.push_back({tick_to_ms(tc.tick), 60000000.0 / tc.us_per_beat});
-    struct Signature { uint64_t tick; int num, den; };
-    std::vector<Signature> sigs;
-    uint64_t last_tick = 0;
-    for (int t = 0; t < track_count_; ++t) {
-      uint64_t tick = 0;
-      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
-        auto& ev = tracks[t].event_sequence[e];
-        tick += ev.deltaTime;
-        if (ev.type == midi::kEventTypeChannel) last_tick = max(last_tick, tick);
-        if (ev.type == midi::kEventTypeMeta && ev.subtype == midi::kEventSubtypeTimeSignature &&
-            ev.data.time_signature.numerator > 0 && ev.data.time_signature.denominator > 0)
-          sigs.push_back({tick, ev.data.time_signature.numerator, ev.data.time_signature.denominator});
-      }
-    }
-    std::stable_sort(sigs.begin(), sigs.end(), [](const Signature& a, const Signature& b) { return a.tick < b.tick; });
-    int num = 4, den = 4, bar = 1, beat = 0;
-    size_t next_sig = 0;
-    uint64_t tick = 0;
-    while (tick <= last_tick + uint64_t(tpb) * 4 && song_.beats.size() < 100000) {
-      while (next_sig < sigs.size() && sigs[next_sig].tick <= tick) {
-        num = sigs[next_sig].num;
-        den = sigs[next_sig].den;
-        if (beat != 0) { ++bar; beat = 0; }  // a new signature starts a new bar
-        ++next_sig;
-      }
-      song_.beats.push_back({tick_to_ms(tick), bar, beat});
-      const uint64_t step = uint64_t(tpb * 4 / den);
-      tick += step ? step : 1;
-      if (++beat >= num) { beat = 0; ++bar; }
-    }
-  }
-  BuildSongInfo(midifile);
-  track_mute_mask_ = 0;
-  track_solo_mask_ = 0;
-
-  if (program_override_ >= 0)
-    set_program_override(program_override_);  // songs without program changes start on it too
-  Reset();
+  SongInfo song;
+  BuildSongFromFile(midifile, song);
+  InstallSong(PrepareSong(std::move(song)), -1.0);
 }
 
-void MidiSynth::BuildSongInfo(const midi::MidiLoader& file) {
-  song_.tracks.resize(track_count_);
-  for (int t = 0; t < track_count_; ++t) {
-    SongTrack& st = song_.tracks[t];
-    if (t < 64) st.name = file.track_names[t];
-    float start[16][128];
-    uint8_t velocity[16][128];
-    for (auto& row : start) for (auto& v : row) v = -1.0f;
-    double last_ms = 0;
-    auto close = [&](int ch, int note, double end_ms) {
-      if (start[ch][note] < 0) return;
-      st.notes.push_back({start[ch][note], float(end_ms), uint8_t(note), velocity[ch][note], uint8_t(ch)});
-      start[ch][note] = -1.0f;
-    };
-    for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
-      const auto& ev = tracks[t].event_sequence[e];
+MidiSynth::PreparedSong MidiSynth::PrepareSong(SongInfo song) {
+  PreparedSong prepared;
+  UpdateSongTiming(song);
+  prepared.tracks.resize(song.tracks.size());
+  for (size_t t = 0; t < song.tracks.size(); ++t)
+    BuildTrackEvents(song, int(t), prepared.tracks[t].events);
+  prepared.song = std::move(song);
+  return prepared;
+}
+
+void MidiSynth::InstallSong(PreparedSong&& prepared, double position_ms) {
+  if (mode_ == kModeTest)
+    return;
+  const bool fresh = position_ms < 0;
+  if (fresh) {
+    player_->Stop();
+    // Every file starts from GM defaults, not from where the previous file left the channels.
+    AllNotesOff();
+    ResetChannelsToDefaults();
+  }
+  song_ = std::move(prepared.song);
+  track_store_ = std::move(prepared.tracks);
+  BindTracks();
+  ticks_per_beat = song_.ticks_per_beat;
+  bpm = 120;  // until the song's first tempo event
+  player_->song_length_ms = song_.length_ms;
+  for (auto& track : track_store_) {
+    for (auto& ev : track.events) {
       if (ev.type != midi::kEventTypeChannel) continue;
-      const int ch = ev.channel & 15;
-      last_ms = ev.abs_time_ms;
-      st.channel_mask |= uint16_t(1 << ch);
-      switch (ev.subtype) {
-        case midi::kEventSubtypeNoteOn: {
-          const int note = ev.data.note.noteNumber & 127;
-          close(ch, note, ev.abs_time_ms);  // re-struck without a note-off
-          start[ch][note] = float(ev.abs_time_ms);
-          velocity[ch][note] = ev.data.note.velocity;
-          break;
-        }
-        case midi::kEventSubtypeNoteOff:
-          close(ch, ev.data.note.noteNumber & 127, ev.abs_time_ms);
-          break;
-        case midi::kEventSubtypeProgramChange:
-          if (st.program < 0) st.program = ch == 9 ? 128 : ev.data.program.number;
-          break;
-        default:
-          break;
+      channels[ev.channel & 15]->set_silence(false);
+      if (ev.subtype == midi::kEventSubtypeProgramChange) {
+        if ((ev.channel & 15) == 9) drum_kit_->Load();
+        else instr[ev.data.program.number & 127]->Load();
       }
     }
-    for (int ch = 0; ch < 16; ++ch)
-      for (int n = 0; n < 128; ++n) close(ch, n, last_ms);
-    std::sort(st.notes.begin(), st.notes.end(), [](const SongNote& a, const SongNote& b) { return a.start_ms < b.start_ms; });
-    for (auto& n : st.notes) {
-      if (n.note < st.low_note) st.low_note = n.note;
-      if (n.note > st.high_note) st.high_note = n.note;
-    }
-    if (st.program < 0 && (st.channel_mask & (1 << 9))) st.program = 128;
   }
-  song_.loaded = true;
+  if (fresh) {
+    track_mute_mask_ = 0;
+    track_solo_mask_ = 0;
+    if (program_override_ >= 0)
+      set_program_override(program_override_);  // songs without program changes start on it too
+    Reset();
+    ChaseSetup(0.0);  // instruments in place before playback starts
+  } else {
+    Seek(position_ms);  // same place in the edited song
+  }
 }
+
 
 // Instrument for a channel: its per-channel override if set, else the drum kit on channel 10,
 // else the global program override, else the program the file/live input selected.
@@ -634,6 +444,8 @@ void MidiSynth::ResetChannelsToDefaults() {
 // Rewinds every track, then replays everything but notes up to the target so programs,
 // controllers and tempo are what they would be there, and schedules the first event after it.
 void MidiSynth::Seek(double target_ms) {
+  if (target_ms < 0) target_ms = 0;
+  position_ms_ = target_ms;
   if (!initialized_ || mode_ != kModeSequencer || track_count_ == 0 || tracks == nullptr)
     return;
   AllNotesOff();
@@ -653,13 +465,46 @@ void MidiSynth::Seek(double target_ms) {
       samples_to_next_event = 0xFFFFFFFF;
       break;
     }
-    if (ev->abs_time_ms >= target_ms) {
+    const bool is_note = ev->subtype == midi::kEventSubtypeNoteOn || ev->subtype == midi::kEventSubtypeNoteOff;
+    // Stop at the first event after the target, or at the first note exactly on it.
+    if (ev->abs_time_ms > target_ms || (is_note && ev->abs_time_ms >= target_ms)) {
       last_event = ev;
-      samples_to_next_event = uint32_t((ev->abs_time_ms - target_ms) * 0.001 * sample_rate_);
+      samples_to_next_event = uint32_t((ev->abs_time_ms - target_ms) * 0.001 * sample_rate_ / speed_);
       break;
     }
     if (ev->subtype != midi::kEventSubtypeNoteOn && ev->subtype != midi::kEventSubtypeNoteOff)
       HandleEvent(ev);
+  }
+  ChaseSetup(target_ms);
+}
+
+// Chase: a channel whose part hasn't started by from_ms gets the set-up events (program, volume,
+// pan...) it has before its first note, so a song positioned before a part starts already has
+// that part's instrument. They fire again at their own time during playback, so this changes
+// nothing audible (no voices sound on the channel before its first note).
+void MidiSynth::ChaseSetup(double from_ms) {
+  double first_note[16];
+  for (auto& f : first_note) f = 1e300;
+  for (int t = 0; t < track_count_; ++t)
+    for (uint32_t i = 0; i < tracks[t].event_count; ++i) {
+      const auto& ev = tracks[t].event_sequence[i];
+      if (ev.type == midi::kEventTypeChannel && ev.subtype == midi::kEventSubtypeNoteOn &&
+          ev.abs_time_ms < first_note[ev.channel & 15])
+        first_note[ev.channel & 15] = ev.abs_time_ms;
+    }
+  for (int t = 0; t < track_count_; ++t) {
+    bool note_in_track[16] = {};
+    for (uint32_t i = 0; i < tracks[t].event_count; ++i) {
+      midi::Event* ev = &tracks[t].event_sequence[i];
+      if (ev->type != midi::kEventTypeChannel) continue;
+      const int ch = ev->channel & 15;
+      if (ev->subtype == midi::kEventSubtypeNoteOn || ev->subtype == midi::kEventSubtypeNoteOff) {
+        note_in_track[ch] = true;
+        continue;
+      }
+      if (first_note[ch] >= from_ms && !note_in_track[ch] && ev->abs_time_ms <= first_note[ch])
+        HandleEvent(ev);
+    }
   }
 }
 
@@ -727,56 +572,133 @@ void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) 
   HandleEvent(&ev);
 }
 
+// Renders the next block: count-in clicks first if one was requested, then the sequencer, split
+// at the loop end (playback jumps back to the loop start, sample-accurately).
 void MidiSynth::RenderSamplesStereo(uint32_t samples_count, real_t* data_out) {
   ApplyOverridesIfChanged();
-	uint32_t data_offset = 0;
+  uint32_t data_offset = 0;
   if (mode_ == kModeTest) {
     samples_to_next_event = samples_count;
-		auto samples_to_generate = samples_to_next_event;
-		if (samples_to_generate > 0) {
+    auto samples_to_generate = samples_to_next_event;
+    if (samples_to_generate > 0) {
       GenerateIntoBufferStereo(samples_to_generate,data_out,data_offset);
-			data_offset += samples_to_generate * 2;
-			samples_count -= samples_to_generate;
-			samples_to_next_event -= samples_to_generate;
-      if (mode_ == kModeTest)
-        samples_to_next_event = 0xFFFFFFFF;
-		}
+      samples_count -= samples_to_generate;
+      samples_to_next_event = 0xFFFFFFFF;
+    }
     if (last_event != nullptr) {
-			HandleEvent(last_event);
+      HandleEvent(last_event);
       memset(last_event,0,sizeof(midi::Event));
     }
     last_event = GetNextEvent();
-  } else if (mode_ == kModeSequencer) {
-    while (true) {
-		  if (samples_to_next_event != 0xFFFFFFFF && samples_to_next_event <= samples_count) {
-			  /* generate samplesToNextEvent samples, process event and repeat */
-			  auto samples_to_generate = samples_to_next_event;
-			  if (samples_to_generate > 0) {
-          GenerateIntoBufferStereo(samples_to_generate,data_out,data_offset);
-				  samples_count -= samples_to_generate;
-				  samples_to_next_event -= samples_to_generate;
-          if (mode_ == kModeTest)
-            samples_to_next_event = 0xFFFFFFFF;
-			  }
-        if (last_event != nullptr) {
-			    HandleEvent(last_event);
-          if (mode_ == kModeTest)
-            memset(last_event,0,sizeof(midi::Event));
-        }
-        last_event = GetNextEvent();
-
-		  } else {
-			  /* generate samples to end of buffer */
-			  if (samples_count > 0) {
-				  GenerateIntoBufferStereo(samples_count,data_out,data_offset);
-				  samples_to_next_event -= samples_count;
-			  }
-			  break;
-		  }
-	  }
+    return;
   }
 
+  uint32_t done = 0;
+  const double count_in_ms = count_in_request_ms_.exchange(0);
+  if (count_in_ms > 0) {
+    count_in_frames_ = uint32_t(count_in_ms * 0.001 * sample_rate_);
+    count_in_beat_frames_ = std::max<uint32_t>(1, uint32_t(count_in_beat_ms_ * 0.001 * sample_rate_));
+    count_in_done_ = 0;
+  }
+  if (count_in_frames_ > 0) {  // the song waits; live input still plays
+    const uint32_t n = std::min<uint32_t>(samples_count, count_in_frames_);
+    GenerateIntoBufferStereo(n, data_out, data_offset);
+    for (uint32_t i = 0; i < n; ++i, ++count_in_done_) {
+      if (count_in_done_ % count_in_beat_frames_ == 0) StartClick(count_in_done_ == 0);
+      if (click_.amp > 1e-4f) {
+        const float s = sinf(click_.phase) * click_.amp;
+        click_.phase += click_.inc;
+        click_.amp *= click_.decay;
+        data_out[2 * i] += s;
+        data_out[2 * i + 1] += s;
+      }
+    }
+    count_in_frames_ -= n;
+    done = n;
+  }
 
+  while (done < samples_count) {
+    uint32_t segment = samples_count - done;
+    bool wrap = false;
+    const double loop_start = loop_start_ms_, loop_end = loop_end_ms_;
+    if (loop_on_ && loop_end - loop_start >= 20.0) {
+      double pos = position_ms_;
+      if (pos >= loop_end) {  // switched on (or moved) behind the playhead
+        Seek(loop_start);
+        pos = loop_start;
+      }
+      const double frames_left = (loop_end - pos) * 0.001 * sample_rate_ / speed_;
+      if (frames_left < segment) {
+        segment = std::max<uint32_t>(1, uint32_t(ceil(frames_left)));
+        wrap = true;
+      }
+    }
+    RenderSequencer(segment, data_out + done * 2);
+    done += segment;
+    if (wrap) Seek(loop_start);
+  }
+}
+
+void MidiSynth::RenderSequencer(uint32_t samples_count, real_t* data_out) {
+  const double start_ms = position_ms_;
+  const uint32_t frames = samples_count;
+  uint32_t data_offset = 0;
+  while (true) {
+    if (samples_to_next_event != 0xFFFFFFFF && samples_to_next_event <= samples_count) {
+      /* generate samplesToNextEvent samples, process event and repeat */
+      auto samples_to_generate = samples_to_next_event;
+      if (samples_to_generate > 0) {
+        GenerateIntoBufferStereo(samples_to_generate,data_out,data_offset);
+        samples_count -= samples_to_generate;
+        samples_to_next_event -= samples_to_generate;
+      }
+      if (last_event != nullptr)
+        HandleEvent(last_event);
+      last_event = GetNextEvent();
+    } else {
+      /* generate samples to end of buffer */
+      if (samples_count > 0) {
+        GenerateIntoBufferStereo(samples_count,data_out,data_offset);
+        samples_to_next_event -= samples_count;
+      }
+      break;
+    }
+  }
+  const double ms_per_frame = 1000.0 / sample_rate_ * speed_;
+  position_ms_ = start_ms + frames * ms_per_frame;
+  MixClicks(data_out, frames, start_ms, ms_per_frame);
+}
+
+// Metronome: a short decaying sine on every beat of the song's grid (higher on downbeats),
+// added after the mixer.
+void MidiSynth::StartClick(bool downbeat) {
+  click_.phase = 0;
+  click_.inc = float(6.283185307179586 * (downbeat ? 1760.0 : 1175.0) / sample_rate_);
+  click_.amp = metronome_level_ * (downbeat ? 1.0f : 0.7f);
+  click_.decay = expf(-1.0f / (0.012f * sample_rate_));
+}
+
+void MidiSynth::MixClicks(real_t* data_out, uint32_t frames, double start_ms, double ms_per_frame) {
+  const bool on = metronome_on_;
+  if (!on && click_.amp <= 1e-4f) return;
+  const auto& beats = song_.beats;
+  // first beat at or after start_ms
+  size_t b = std::lower_bound(beats.begin(), beats.end(), start_ms,
+                              [](const SongBeat& beat, double ms) { return beat.ms < ms; }) - beats.begin();
+  for (uint32_t i = 0; i < frames; ++i) {
+    const double t = start_ms + i * ms_per_frame;
+    while (on && b < beats.size() && beats[b].ms < t + ms_per_frame) {  // beat within this frame
+      StartClick(beats[b].beat == 0);
+      ++b;
+    }
+    if (click_.amp > 1e-4f) {
+      const float s = sinf(click_.phase) * click_.amp;
+      click_.phase += click_.inc;
+      click_.amp *= click_.decay;
+      data_out[2 * i] += s;
+      data_out[2 * i + 1] += s;
+    }
+  }
 }
 
 
@@ -858,7 +780,7 @@ midi::Event* MidiSynth::GetNextEvent() {
 
 	    auto beatsToNextEvent = ticks_to_next_event / double(ticks_per_beat);
 		  auto secondsToNextEvent = beatsToNextEvent / (bpm / 60);
-		  samples_to_next_event += uint32_t(secondsToNextEvent * sample_rate_);
+		  samples_to_next_event += uint32_t(secondsToNextEvent * sample_rate_ / speed_);
 	  } else {
 		  result = nullptr;
 		  samples_to_next_event = 0xFFFFFFFF;
@@ -867,7 +789,7 @@ midi::Event* MidiSynth::GetNextEvent() {
       } else {
         player_->RequestStop();
       }*/
-      player_->Stop();
+      if (!hold_at_end_) player_->Stop();  // while recording the transport keeps going
 	  }
   } else if (mode_ == kModeTest) {
     EnterCriticalSection(&me_lock);

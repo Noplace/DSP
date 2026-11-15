@@ -35,34 +35,42 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   g.Fill(r, theme::kPanel);
   g.Line(r.x, r.b() - 0.5f, r.r(), r.b() - 0.5f, theme::kLine);
   const float cy = r.cy();
-  float x = r.x + 18;
+  float x = r.x + 16;
 
-  if (r.w >= 1420) {  // the name gives way to the file buttons on narrow windows
+  if (r.w >= 1540) {  // the name gives way to the buttons on narrower windows
     g.Text("DSP", Rect(x, cy - 11, 40, 22), theme::kAccent, 17, Align::kLeft, true);
     g.Text("Studio", Rect(x + 36, cy - 11, 70, 22), theme::kText, 17, Align::kLeft, false);
-    x += 116;
+    x += 112;
   }
 
-  if (ui_.Button(Id(this, 1), Rect(x, cy - 15, 62, 30), "Open")) PromptAndOpen();
-  x += 66;
-  if (ui_.Button(Id(this, 6), Rect(x, cy - 15, 58, 30), "Save")) PromptSaveSession(ui_.in.shift);
-  if (ui_.Hover(Rect(x, cy - 15, 58, 30)))
-    ui_.Tooltip(session_path_.empty() ? "Save session (Ctrl+S)" : "Save session (Ctrl+S, Shift = save as)", x + 29, cy - 15);
-  x += 62;
-  if (ui_.Button(Id(this, 7), Rect(x, cy - 15, 68, 30), "Export", false, theme::kAccent) && !exporter_.busy())
-    PromptExport();
-  if (ui_.Hover(Rect(x, cy - 15, 68, 30))) ui_.Tooltip("Export WAV, 24-bit (Ctrl+E)", x + 34, cy - 15);
-  x += 86;
+  auto button = [&](int salt, float w, const char* label, const char* tip, bool on = false, Color color = theme::kAccent) {
+    const Rect br(x, cy - 15, w, 30);
+    const bool clicked = ui_.Button(Id(this, salt), br, label, on, color);
+    if (tip && ui_.Hover(br)) ui_.Tooltip(tip, br.cx(), br.y);
+    x += w + 4;
+    return clicked;
+  };
+  if (button(9, 50, "New", "New empty song (Ctrl+N)")) NewSong();
+  if (button(1, 56, "Open", "Open a MIDI file or session (Ctrl+O)")) PromptAndOpen();
+  if (button(6, 54, "Save", session_path_.empty() ? "Save session (Ctrl+S)" : "Save session (Ctrl+S, Shift = save as)"))
+    PromptSaveSession(ui_.in.shift);
+  const Rect export_r(x, cy - 15, 74, 30);
+  if (button(7, 74, "Export \xE2\x96\xBE", "Export the song as audio (Ctrl+E) or as a MIDI file", export_menu_open_) &&
+      !exporter_.busy()) {
+    export_menu_open_ = !export_menu_open_;
+    export_menu_anchor_ = Rect(export_r.x, export_r.b() + 4, 250, 0);
+  }
+  x += 14;
 
-  // Transport
+  // Transport: rewind, play/pause, stop, record
   const bool playing = synth_player_->state() == dsp::audio::synth::RealtimePlayer::kStatePlaying;
   const Color icon = theme::kText;
-  Rect b(x, cy - 15, 38, 30);
-  if (ui_.Button(Id(this, 2), b, "")) Seek(0);
+  Rect b(x, cy - 15, 36, 30);
+  if (ui_.Button(Id(this, 2), b, "")) Seek(midi_synth_->loop_on() ? midi_synth_->loop_start_ms() : 0);
   g.Fill(Rect(b.cx() - 7, cy - 6, 2, 12), icon);
   g.FillTriangle(b.cx() + 6, cy - 6, b.cx() + 6, cy + 6, b.cx() - 4, cy, icon);
-  b.x += 42;
-  b.w = 46;
+  b.x += 40;
+  b.w = 44;
   if (ui_.Button(Id(this, 3), b, "", playing, theme::kGreen)) synth_player_->TogglePause();
   const Color play_icon = playing ? Rgb(0x0d0f13) : icon;
   if (playing) {
@@ -71,11 +79,24 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   } else {
     g.FillTriangle(b.cx() - 5, cy - 8, b.cx() - 5, cy + 8, b.cx() + 8, cy, play_icon);
   }
-  b.x += 50;
-  b.w = 38;
-  if (ui_.Button(Id(this, 4), b, "")) synth_player_->Stop();
+  b.x += 48;
+  b.w = 36;
+  if (ui_.Button(Id(this, 4), b, "")) {
+    if (recording_) StopRecording();
+    synth_player_->Stop();
+  }
   g.Fill(Rect(b.cx() - 6, cy - 6, 12, 12), icon);
-  x = b.r() + 22;
+  b.x += 40;
+  if (ui_.Button(Id(this, 10), b, "", recording_, theme::kRed)) {
+    if (recording_) StopRecording();
+    else StartRecording();
+  }
+  g.Circle(b.cx(), cy, 6, recording_ ? Rgb(0xffffff) : theme::kRed, true);
+  if (ui_.Hover(b))
+    ui_.Tooltip(recording_ ? "Stop recording: the take becomes a new track (Ctrl+R)"
+                           : "Record live input from a MIDI keyboard or the PC keys (Ctrl+R)",
+                b.cx(), b.y);
+  x = b.r() + 16;
 
   // Position
   const auto& song = midi_synth_->song();
@@ -83,15 +104,15 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   char now[32], len[32], line[96];
   FormatTime(pos, now, sizeof(now), true);
   FormatTime(song.length_ms, len, sizeof(len), false);
-  g.FillRound(Rect(x, cy - 20, 230, 40), 5, Rgb(0x0e1014));
-  g.Text(now, Rect(x + 12, cy - 19, 110, 26), theme::kText, 21, Align::kLeft, false, true);
+  g.FillRound(Rect(x, cy - 20, 226, 40), 5, Rgb(0x0e1014));
+  g.Text(now, Rect(x + 12, cy - 19, 110, 26), recording_ ? theme::kRed : theme::kText, 21, Align::kLeft, false, true);
   snprintf(line, sizeof(line), "/ %s", len);
   g.Text(line, Rect(x + 112, cy - 17, 110, 22), theme::kDim, 13, Align::kLeft, false, true);
   int bar = 1, beat = 1;
   double bpm = 120;
   if (!song.beats.empty()) {
     auto it = std::upper_bound(song.beats.begin(), song.beats.end(), pos,
-                               [](double v, const dsp::audio::synth::SongBeat& b) { return v < b.ms; });
+                               [](double v, const dsp::audio::synth::SongBeat& sb) { return v < sb.ms; });
     if (it != song.beats.begin()) {
       --it;
       bar = it->bar;
@@ -100,12 +121,18 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   }
   for (auto& t : song.tempo)
     if (t.ms <= pos) bpm = t.bpm;
-  snprintf(line, sizeof(line), "BAR %d.%d    %.1f BPM", bar, beat, bpm);
-  g.Text(line, Rect(x + 13, cy + 4, 210, 14), theme::kDim, 10.5f, Align::kLeft, false, true);
-  x += 248;
+  if (midi_synth_->counting_in()) {
+    g.Text("COUNT-IN", Rect(x + 13, cy + 4, 210, 14), theme::kOrange, 10.5f, Align::kLeft, true, true);
+  } else {
+    const double speed = midi_synth_->speed();
+    if (fabs(speed - 1.0) > 1e-3) snprintf(line, sizeof(line), "BAR %d.%d   %.1f BPM x%.2f", bar, beat, bpm, speed);
+    else snprintf(line, sizeof(line), "BAR %d.%d    %.1f BPM", bar, beat, bpm);
+    g.Text(line, Rect(x + 13, cy + 4, 210, 14), recording_ ? theme::kRed : theme::kDim, 10.5f, Align::kLeft, false, true);
+  }
+  x += 240;
 
-  // File name / export progress / last message
-  const float right_block = 410;
+  // File name / export progress
+  const float right_block = 290;
   const Rect info(x, cy - 18, std::max(60.0f, r.r() - right_block - x), 36);
   if (exporter_.busy()) {
     const bool preparing = exporter_.state() == Exporter::kPreparing;
@@ -113,25 +140,27 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
     if (preparing) snprintf(text, sizeof(text), "Export: preparing instruments...");
     else snprintf(text, sizeof(text), "Exporting WAV  %.0f%%", exporter_.progress() * 100);
     g.Text(text, Rect(info.x, info.y, info.w - 70, 18), theme::kText, 12);
-    const Rect bar(info.x, info.y + 23, info.w - 76, 6);
-    g.FillRound(bar, 3, Rgb(0x0b0c10));
-    g.FillRound(Rect(bar.x, bar.y, bar.w * exporter_.progress(), bar.h), 3, theme::kAccent);
+    const Rect bar_r(info.x, info.y + 23, info.w - 76, 6);
+    g.FillRound(bar_r, 3, Rgb(0x0b0c10));
+    g.FillRound(Rect(bar_r.x, bar_r.y, bar_r.w * exporter_.progress(), bar_r.h), 3, theme::kAccent);
     if (ui_.Button(Id(this, 8), Rect(info.r() - 66, cy - 12, 62, 24), "Cancel", false, theme::kAccent, 11))
       exporter_.Cancel();
   } else {
-    g.Text(midi_name_[0] ? midi_name_ : "No file loaded", Rect(info.x, session_path_.empty() ? cy - 10 : cy - 17, info.w, 20),
+    std::string name = midi_name_[0] ? midi_name_ : "No file loaded";
+    if (song_modified_) name += "  (edited)";
+    g.Text(name.c_str(), Rect(info.x, session_path_.empty() ? cy - 10 : cy - 17, info.w, 20),
            midi_name_[0] ? theme::kText : theme::kFaint, 13);
     if (!session_path_.empty()) {
       const size_t slash = session_path_.find_last_of("\\/");
-      const std::string name = "session: " + (slash == std::string::npos ? session_path_ : session_path_.substr(slash + 1));
-      g.Text(name.c_str(), Rect(info.x, cy + 2, info.w, 16), theme::kDim, 10.5f);
+      const std::string session = "session: " + (slash == std::string::npos ? session_path_ : session_path_.substr(slash + 1));
+      g.Text(session.c_str(), Rect(info.x, cy + 2, info.w, 16), theme::kDim, 10.5f);
     }
   }
 
   // Output meter (after the limiter) and limiter activity
-  float rx = r.r() - right_block + 16;
+  float rx = r.r() - right_block + 8;
   g.Text("OUT", Rect(rx, cy - 8, 30, 16), theme::kDim, 10.5f, Align::kLeft, true);
-  const Rect meter(rx + 32, cy - 5, 120, 10);
+  const Rect meter(rx + 32, cy - 5, 110, 10);
   g.FillRound(meter, 2, Rgb(0x0b0c10));
   const float t = std::clamp((output_db_ + 60.0f) / 60.0f, 0.0f, 1.0f);
   const Color mc = output_db_ > -1.5f ? theme::kRed : output_db_ > -9 ? theme::kYellow : theme::kGreen;
@@ -140,11 +169,36 @@ void ClientMainWindow::DrawTopBar(const Rect& r) {
   if (output_db_ <= -89) snprintf(text, sizeof(text), "-inf");
   else snprintf(text, sizeof(text), "%.1f", output_db_);
   g.Text(text, Rect(meter.r() + 6, cy - 8, 44, 16), theme::kText, 11, Align::kLeft, false, true);
-  snprintf(text, sizeof(text), "LIM %.1f dB", limiter_db_);
-  g.Text(text, Rect(meter.r() + 48, cy - 8, 72, 16), limiter_db_ < -0.5f ? theme::kOrange : theme::kFaint, 11,
+  snprintf(text, sizeof(text), "LIM %.1f", limiter_db_);
+  g.Text(text, Rect(meter.r() + 48, cy - 8, 70, 16), limiter_db_ < -0.5f ? theme::kOrange : theme::kFaint, 11,
          Align::kLeft, false, true);
-  if (ui_.Button(Id(this, 5), Rect(r.r() - 118, cy - 14, 100, 28), "Reset mixer")) {
-    midi_synth_->mixer.ResetAll();
+}
+
+// Export menu (popup under the Export button).
+void ClientMainWindow::DrawExportMenu(const Rect& a) {
+  Gfx& g = gfx_;
+  const Rect box(a.x, a.y, a.w, 2 * 34 + 12);
+  if (ui_.in.pressed && !box.Contains(ui_.in.mx, ui_.in.my)) {
+    ui_.in.pressed = false;
+    export_menu_open_ = false;
+    return;
+  }
+  g.FillRound(Rect(box.x + 3, box.y + 5, box.w, box.h), 6, Rgb(0x000000, 0.45f));
+  g.FillRound(box, 6, theme::kPanel2);
+  g.StrokeRound(box, 6, theme::kLine);
+  const char* labels[2] = {"Audio (WAV, 24-bit)...", "MIDI file..."};
+  const char* keys[2] = {"Ctrl+E", ""};
+  for (int i = 0; i < 2; ++i) {
+    const Rect item(box.x + 6, box.y + 6 + i * 34, box.w - 12, 32);
+    const bool over = ui_.Hover(item);
+    if (over) g.FillRound(item, 4, theme::kPanel3);
+    g.Text(labels[i], item.Inset(12, 0), theme::kText, 12.5f);
+    g.Text(keys[i], Rect(item.x, item.y, item.w - 12, item.h), theme::kDim, 11, Align::kRight);
+    if (ui_.Clicked(Id(this, 70 + i), item)) {
+      export_menu_open_ = false;
+      if (i == 0) PromptExport();
+      else PromptExportMidi();
+    }
   }
 }
 
@@ -187,6 +241,154 @@ void ClientMainWindow::DrawStatusBar(const Rect& r) {
 // ---------------------------------------------------------------------------------------------
 // Track view
 // ---------------------------------------------------------------------------------------------
+// Ruler shared by the track view and the piano roll: markers on top (click = jump, drag = move,
+// right-click = delete), bar numbers below. Click in the bar lane seeks; drag there sets the
+// loop region (snapped to beats, Shift = free); drag the loop's edges to change it.
+void ClientMainWindow::DrawRuler(const Rect& ruler, double view_start_ms, double ms_per_px, const Rect& lanes) {
+  Gfx& g = gfx_;
+  const SongInfo& song = midi_synth_->song();
+  const float marker_h = 13;
+  const Rect marker_lane(ruler.x, ruler.y, ruler.w, marker_h);
+  const Rect bar_lane(ruler.x, ruler.y + marker_h, ruler.w, ruler.h - marker_h);
+  auto x_of = [&](double ms) { return ruler.x + float((ms - view_start_ms) / ms_per_px); };
+  auto ms_at = [&](float px) { return std::max(0.0, view_start_ms + (px - ruler.x) * ms_per_px); };
+  const double view_end = view_start_ms + ruler.w * ms_per_px;
+
+  g.Fill(ruler, theme::kPanel2);
+  g.Fill(marker_lane, Mix(theme::kPanel2, theme::kBg, 0.35f));
+  g.PushClip(ruler);
+
+  // loop region
+  const double loop_a = midi_synth_->loop_start_ms(), loop_b = midi_synth_->loop_end_ms();
+  const bool loop_on = midi_synth_->loop_on();
+  if (loop_b - loop_a >= 20) {
+    const float la = x_of(loop_a), lb = x_of(loop_b);
+    const Color lc = loop_on ? theme::kAccent : theme::kFaint;
+    g.Fill(Rect(la, bar_lane.y, lb - la, bar_lane.h), WithAlpha(lc, loop_on ? 0.30f : 0.15f));
+    g.Fill(Rect(la, bar_lane.y, 2, bar_lane.h), lc);
+    g.Fill(Rect(lb - 2, bar_lane.y, 2, bar_lane.h), lc);
+  }
+
+  // bar numbers and beat ticks
+  if (song.beats.size() > 1) {
+    double bar_ms = 2000;
+    for (size_t i = 1; i < song.beats.size(); ++i)
+      if (song.beats[i].beat == 0) { bar_ms = song.beats[i].ms - song.beats[0].ms; break; }
+    const float bar_px = float(bar_ms / ms_per_px);
+    int bar_step = 1;
+    while (bar_px * bar_step < 46 && bar_step < 4096) bar_step *= 2;
+    const bool show_beats = bar_px / 4 > 9;
+    for (const auto& b : song.beats) {
+      if (b.ms < view_start_ms - bar_ms) continue;
+      if (b.ms > view_end) break;
+      const float bx = x_of(b.ms);
+      if (b.beat == 0 && (b.bar - 1) % bar_step == 0) {
+        char num[16];
+        snprintf(num, sizeof(num), "%d", b.bar);
+        g.Line(bx, bar_lane.y + 8, bx, ruler.b(), theme::kFaint, 1);
+        g.Text(num, Rect(bx + 4, bar_lane.y + 1, 50, 14), theme::kDim, 10.5f);
+      } else if (show_beats) {
+        g.Line(bx, ruler.b() - 4, bx, ruler.b(), theme::kFaint, 1);
+      }
+    }
+  }
+
+  // markers
+  int hover_marker = -1;
+  for (int i = 0; i < int(markers_.size()); ++i) {
+    const float mx = x_of(markers_[i].ms);
+    const float w = g.TextWidth(markers_[i].name.c_str(), 9.5f, true) + 10;
+    const Rect flag(mx, marker_lane.y + 1, w, marker_h - 2);
+    if (flag.r() < ruler.x || flag.x > ruler.r()) continue;
+    const bool over = ui_.Hover(flag);
+    if (over) hover_marker = i;
+    g.FillRound(flag, 2, over || marker_drag_ == i ? theme::kYellow : Mix(theme::kYellow, theme::kPanel2, 0.35f));
+    g.Text(markers_[i].name.c_str(), flag.Inset(5, 0), Rgb(0x0d0f13), 9.5f, Align::kLeft, true);
+  }
+  g.PopClip();
+
+  // --- interaction ---
+  const WidgetId marker_id = Id(this, 32), bar_id = Id(this, 33);
+  if (hover_marker >= 0 && ui_.in.rpressed) {  // right-click deletes
+    markers_.erase(markers_.begin() + hover_marker);
+    ui_.in.rpressed = false;
+    hover_marker = -1;
+  }
+  if (hover_marker >= 0 && ui_.Press(marker_id, Rect(x_of(markers_[hover_marker].ms) - 2, marker_lane.y, 200, marker_h))) {
+    marker_drag_ = hover_marker;
+    ruler_drag_ = 5;
+    ruler_press_x_ = ui_.in.mx;
+  }
+  const float edge = 5;
+  const float la = x_of(loop_a), lb = x_of(loop_b);
+  const bool has_loop = loop_b - loop_a >= 20;
+  if (ui_.Press(bar_id, bar_lane)) {
+    ruler_press_x_ = ui_.in.mx;
+    if (has_loop && fabsf(ui_.in.mx - la) <= edge) ruler_drag_ = 3;
+    else if (has_loop && fabsf(ui_.in.mx - lb) <= edge) ruler_drag_ = 4;
+    else {
+      ruler_drag_ = 1;
+      ruler_anchor_ms_ = ms_at(ui_.in.mx);
+    }
+  }
+  if (ui_.Hover(bar_lane) && ruler_drag_ == 0 && has_loop &&
+      (fabsf(ui_.in.mx - la) <= edge || fabsf(ui_.in.mx - lb) <= edge))
+    SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+  auto snap = [&](double ms) { return ui_.in.shift ? ms : SnapToBeat(ms); };
+  if (ruler_drag_ != 0 && (ui_.active == marker_id || ui_.active == bar_id)) {
+    const double at = ms_at(ui_.in.mx);
+    if (ruler_drag_ == 1 && fabsf(ui_.in.mx - ruler_press_x_) > 4) ruler_drag_ = 2;  // a drag: new loop
+    if (ruler_drag_ == 1) {
+      seek_dragging_ = true;
+      seek_preview_ms_ = at;
+    } else if (ruler_drag_ == 2) {
+      seek_dragging_ = false;
+      const double a = snap(std::min(ruler_anchor_ms_, at)), b = snap(std::max(ruler_anchor_ms_, at));
+      midi_synth_->set_loop(true, a, std::max(b, a + 20));
+    } else if (ruler_drag_ == 3) {
+      midi_synth_->set_loop(loop_on, std::min(snap(at), loop_b - 20), loop_b);
+    } else if (ruler_drag_ == 4) {
+      midi_synth_->set_loop(loop_on, loop_a, std::max(snap(at), loop_a + 20));
+    } else if (ruler_drag_ == 5 && marker_drag_ >= 0 && marker_drag_ < int(markers_.size()) &&
+               fabsf(ui_.in.mx - ruler_press_x_) > 3) {
+      markers_[marker_drag_].ms = snap(at);
+    }
+    if (!ui_.in.down) {  // released
+      if (ruler_drag_ == 1) Seek(at);
+      if (ruler_drag_ == 5 && marker_drag_ >= 0 && marker_drag_ < int(markers_.size())) {
+        if (fabsf(ui_.in.mx - ruler_press_x_) <= 3) Seek(markers_[marker_drag_].ms);  // a click jumps there
+        std::sort(markers_.begin(), markers_.end(), [](const Marker& p, const Marker& q) { return p.ms < q.ms; });
+      }
+      seek_dragging_ = false;
+      ruler_drag_ = 0;
+      marker_drag_ = -1;
+      ui_.active = 0;
+    }
+  }
+  if (hover_marker >= 0 && ruler_drag_ == 0) ui_.Tooltip("Click: jump  \xC2\xB7  drag: move  \xC2\xB7  right-click: delete",
+                                                         ui_.in.mx, marker_lane.y);
+}
+
+void ClientMainWindow::DrawLoopAndPlayhead(const Rect& ruler, const Rect& lanes, double view_start_ms, double ms_per_px) {
+  Gfx& g = gfx_;
+  auto x_of = [&](double ms) { return lanes.x + float((ms - view_start_ms) / ms_per_px); };
+  const double loop_a = midi_synth_->loop_start_ms(), loop_b = midi_synth_->loop_end_ms();
+  if (midi_synth_->loop_on() && loop_b - loop_a >= 20) {
+    const float la = std::max(lanes.x, x_of(loop_a)), lb = std::min(lanes.r(), x_of(loop_b));
+    if (lb > la) g.Fill(Rect(la, lanes.y, lb - la, lanes.h), WithAlpha(theme::kAccent, 0.05f));
+  }
+  for (auto& m : markers_) {
+    const float mx = x_of(m.ms);
+    if (mx >= lanes.x && mx <= lanes.r()) g.Line(mx, lanes.y, mx, lanes.b(), WithAlpha(theme::kYellow, 0.35f), 1);
+  }
+  const float px = x_of(PlayheadMs());
+  if (px >= lanes.x && px <= lanes.r()) {
+    const Color c = seek_dragging_ ? theme::kYellow : recording_ ? theme::kRed : theme::kText;
+    g.Line(px, ruler.y + 13, px, lanes.b(), WithAlpha(c, 0.9f), 1.5f);
+    g.FillTriangle(px - 6, ruler.y + 13, px + 6, ruler.y + 13, px, ruler.y + 21, c);
+  }
+}
+
 void ClientMainWindow::DrawTrackView(const Rect& area) {
   Gfx& g = gfx_;
   const SongInfo& song = midi_synth_->song();
@@ -194,45 +396,66 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
   g.Fill(header, theme::kPanel);
   g.Text("TRACKS", Rect(header.x + 16, header.y, 80, header.h), theme::kDim, 11, Align::kLeft, true);
 
-  const bool loaded = song.loaded && !visible_tracks_.empty();
-  if (loaded) {
-    size_t notes = 0;
-    for (int t : visible_tracks_) notes += song.tracks[t].notes.size();
-    char info[96];
-    snprintf(info, sizeof(info), "%d tracks  \xC2\xB7  %zu notes", int(visible_tracks_.size()), notes);
-    g.Text(info, Rect(header.x + 78, header.y, 260, header.h), theme::kFaint, 11);
-    float bx = header.r() - 12;
-    bx -= 30;
-    if (ui_.Button(Id(this, 20), Rect(bx, header.y + 5, 26, 22), "+")) ms_per_px_ *= 0.7;
-    bx -= 30;
-    if (ui_.Button(Id(this, 21), Rect(bx, header.y + 5, 26, 22), "\xE2\x88\x92")) ms_per_px_ /= 0.7;
-    bx -= 52;
-    if (ui_.Button(Id(this, 22), Rect(bx, header.y + 5, 48, 22), "Fit", false, theme::kAccent, 11)) ZoomToFit();
-    bx -= 70;
-    if (ui_.Button(Id(this, 23), Rect(bx, header.y + 5, 66, 22), "Follow", follow_playhead_, theme::kAccent, 11))
-      follow_playhead_ = !follow_playhead_;
-  }
-
   const Rect body(area.x, header.b(), area.w, area.h - header.h);
-  if (!loaded) {
+  if (!song.loaded) {
     g.Fill(body, theme::kBg);
-    g.Text("Open a MIDI file to see its tracks", Rect(body.x, body.cy() - 40, body.w, 24), theme::kDim, 15, Align::kCenter);
-    g.Text("Ctrl+O. Live playing (MIDI keyboard or the PC keys) works without a file.", Rect(body.x, body.cy() - 16, body.w, 18),
+    g.Text("Open a MIDI file, or start a new song", Rect(body.x, body.cy() - 44, body.w, 24), theme::kDim, 15, Align::kCenter);
+    g.Text("Live playing (MIDI keyboard or the PC keys) works either way.", Rect(body.x, body.cy() - 20, body.w, 18),
            theme::kFaint, 12, Align::kCenter);
-    if (ui_.Button(Id(this, 24), Rect(body.cx() - 70, body.cy() + 12, 140, 32), "Open MIDI file...", true))
+    if (ui_.Button(Id(this, 24), Rect(body.cx() - 146, body.cy() + 10, 140, 32), "Open MIDI file...", true))
       PromptAndOpen();
+    if (ui_.Button(Id(this, 25), Rect(body.cx() + 6, body.cy() + 10, 140, 32), "New song")) NewSong();
     return;
   }
 
-  const float head_w = 236, ruler_h = 24, hbar_h = 12;
+  // Header: transport options on the left, view controls on the right.
+  float hx = header.x + 74;
+  auto hbutton = [&](int salt, float w, const char* label, bool on, const char* tip) {
+    const Rect br(hx, header.y + 5, w, 22);
+    const bool clicked = ui_.Button(Id(this, salt), br, label, on, theme::kAccent, 11);
+    if (tip && ui_.Hover(br)) ui_.Tooltip(tip, br.cx(), br.y);
+    hx += w + 4;
+    return clicked;
+  };
+  if (hbutton(26, 46, "Loop", midi_synth_->loop_on(), "Loop the region (drag on the ruler to set it)  Ctrl+L"))
+    ToggleLoop();
+  if (hbutton(27, 48, "Click", midi_synth_->metronome(), "Metronome on every beat"))
+    midi_synth_->set_metronome(!midi_synth_->metronome());
+  if (hbutton(28, 68, "Count-in", count_in_, "One bar of clicks before recording starts")) count_in_ = !count_in_;
+  static const dsp::audio::synth::effects::ParamInfo kSpeed = {"Speed", 0.5f, 1.5f, 1.0f,
+                                                                dsp::audio::synth::effects::ParamUnit::kPercent, false};
+  if (ui_.ValueBox(Rect(hx, header.y + 5, 92, 22), kSpeed, &speed_param_, theme::kAccent, "Speed"))
+    midi_synth_->set_speed(speed_param_.load());
+  hx += 96;
+  if (hbutton(29, 70, "+ Marker", false, "Marker at the playhead  Ctrl+M")) AddMarker();
+  if (hbutton(34, 64, "+ Track", false, "New empty track to draw notes into")) OpenEditor(AddTrack());
+  if (area.w > 1060) {
+    char info[96];
+    snprintf(info, sizeof(info), "%d tracks  \xC2\xB7  %d notes", int(visible_tracks_.size()), song.TotalNotes());
+    g.Text(info, Rect(hx + 8, header.y, 200, header.h), theme::kFaint, 11);
+  }
+  float bx = header.r() - 12;
+  bx -= 30;
+  if (ui_.Button(Id(this, 20), Rect(bx, header.y + 5, 26, 22), "+")) ms_per_px_ *= 0.7;
+  bx -= 30;
+  if (ui_.Button(Id(this, 21), Rect(bx, header.y + 5, 26, 22), "\xE2\x88\x92")) ms_per_px_ /= 0.7;
+  bx -= 52;
+  if (ui_.Button(Id(this, 22), Rect(bx, header.y + 5, 48, 22), "Fit", false, theme::kAccent, 11)) ZoomToFit();
+  bx -= 70;
+  if (ui_.Button(Id(this, 23), Rect(bx, header.y + 5, 66, 22), "Follow", follow_playhead_, theme::kAccent, 11))
+    follow_playhead_ = !follow_playhead_;
+
+  const float head_w = 236, ruler_h = 34, hbar_h = 12;
   const Rect ruler(body.x + head_w, body.y, body.w - head_w, ruler_h);
   const Rect lanes(ruler.x, ruler.b(), ruler.w, body.h - ruler_h - hbar_h);
   const Rect hbar(lanes.x, lanes.b(), lanes.w, hbar_h);
   lanes_w_ = lanes.w;
-  const int rows = int(visible_tracks_.size());
-  const float row_h = std::clamp(lanes.h / rows, 40.0f, 76.0f);
+  const int take_rows = recording_ ? 1 : 0;
+  const int rows = int(visible_tracks_.size()) + take_rows;
+  const float row_h = rows ? std::clamp(lanes.h / rows, 40.0f, 76.0f) : 60.0f;
   const float content_h = row_h * rows;
-  const double length = std::max(1000.0, song.length_ms);
+  const double pos = PlayheadMs();
+  const double length = std::max({30000.0, song.length_ms, recording_ ? pos + 10000.0 : 0.0});
   ms_per_px_ = std::clamp(ms_per_px_, 0.5, length / 100.0);
 
   // Wheel: scroll rows, Shift = scroll time, Ctrl = zoom around the mouse.
@@ -253,57 +476,74 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
 
   // Follow the playhead while playing.
   const bool playing = synth_player_->state() == dsp::audio::synth::RealtimePlayer::kStatePlaying;
-  const double pos = PlayheadMs();
-  if (follow_playhead_ && playing && !seek_dragging_ && ui_.active != Id(this, 31) &&
+  if (follow_playhead_ && playing && !seek_dragging_ && ruler_drag_ == 0 && ui_.active != Id(this, 31) &&
       (pos > view_start_ms_ + view_ms * 0.92 || pos < view_start_ms_))
     view_start_ms_ = pos - view_ms * 0.08;
   view_start_ms_ = std::clamp(view_start_ms_, -view_ms * 0.02, std::max(0.0, length - view_ms * 0.5));
   auto x_of = [&](double ms) { return lanes.x + float((ms - view_start_ms_) / ms_per_px_); };
   const double view_end = view_start_ms_ + view_ms;
 
-  // Ruler and grid
+  // Ruler and lane grid
   g.Fill(Rect(body.x, body.y, head_w, ruler_h), theme::kPanel);
-  g.Fill(ruler, theme::kPanel2);
   g.Fill(lanes, theme::kBg);
-  int bar_step = 1;
   if (song.beats.size() > 1) {
-    // pixels per bar, roughly
-    double bar_ms = 0;
+    double bar_ms = 2000;
     for (size_t i = 1; i < song.beats.size(); ++i)
-      if (song.beats[i].beat == 0) { bar_ms = song.beats[i].ms; break; }
+      if (song.beats[i].beat == 0) { bar_ms = song.beats[i].ms - song.beats[0].ms; break; }
     const float bar_px = float(bar_ms / ms_per_px_);
+    int bar_step = 1;
     while (bar_px * bar_step < 46 && bar_step < 4096) bar_step *= 2;
     const bool show_beats = bar_px / 4 > 9;
-    g.PushClip(Rect(lanes.x, ruler.y, lanes.w, ruler.h + lanes.h));
+    g.PushClip(lanes);
     for (const auto& b : song.beats) {
       if (b.ms < view_start_ms_ - 1) continue;
       if (b.ms > view_end) break;
-      const float bx = x_of(b.ms);
-      if (b.beat == 0) {
-        const bool major = (b.bar - 1) % bar_step == 0;
-        g.Line(bx, lanes.y, bx, lanes.b(), major ? theme::kLine : Mix(theme::kLine, theme::kBg, 0.5f), 1);
-        if (major) {
-          char num[16];
-          snprintf(num, sizeof(num), "%d", b.bar);
-          g.Line(bx, ruler.y + 12, bx, ruler.b(), theme::kFaint, 1);
-          g.Text(num, Rect(bx + 4, ruler.y + 2, 50, 14), theme::kDim, 10.5f);
-        }
-      } else if (show_beats) {
-        g.Line(bx, lanes.y, bx, lanes.b(), Mix(theme::kPanel, theme::kBg, 0.4f), 1);
-        g.Line(bx, ruler.b() - 4, bx, ruler.b(), theme::kFaint, 1);
-      }
+      const float lx = x_of(b.ms);
+      if (b.beat == 0)
+        g.Line(lx, lanes.y, lx, lanes.b(), (b.bar - 1) % bar_step == 0 ? theme::kLine : Mix(theme::kLine, theme::kBg, 0.5f), 1);
+      else if (show_beats)
+        g.Line(lx, lanes.y, lx, lanes.b(), Mix(theme::kPanel, theme::kBg, 0.4f), 1);
     }
     g.PopClip();
   }
+  DrawRuler(ruler, view_start_ms_, ms_per_px_, lanes);
 
   // Rows
   bool any_track_solo = false;
   for (int t : visible_tracks_) any_track_solo |= midi_synth_->track_solo(t);
   ui_.Clip(Rect(body.x, lanes.y, body.w, lanes.h));
-  for (int row = 0; row < rows; ++row) {
+  if (recording_) {  // the take so far, live
+    const float y = lanes.y - track_scroll_y_;
+    const Rect head(body.x, y, head_w, row_h);
+    g.Fill(head, Mix(theme::kPanel, theme::kRed, 0.12f));
+    g.Fill(Rect(head.x, y + 1, 4, row_h - 2), theme::kRed);
+    g.Circle(head.x + 20, y + 13, 5, theme::kRed, true);
+    g.Text(midi_synth_->counting_in() ? "Count-in..." : "Recording", Rect(head.x + 32, y + 4, head_w - 40, 18), theme::kRed,
+           12.5f, Align::kLeft, true);
+    char detail[64];
+    size_t held = 0;
+    for (auto& row : take_open_) for (double v : row) held += v >= 0;
+    snprintf(detail, sizeof(detail), "%zu notes so far", take_notes_.size() + held);
+    g.Text(detail, Rect(head.x + 14, y + 22, head_w - 22, 16), theme::kDim, 10.5f);
+    const Rect lane(lanes.x, y, lanes.w, row_h);
+    g.Fill(lane, WithAlpha(theme::kRed, 0.06f));
+    g.PushClip(lane);
+    auto draw = [&](double a, double b, int note) {
+      const float x0 = x_of(a), x1 = std::max(x0 + 2.0f, x_of(b));
+      const float ny = y + row_h - 5 - (note - 24) * (row_h - 10) / 84.0f;
+      g.Fill(Rect(x0, ny - 1.5f, x1 - x0, 3), theme::kRed);
+    };
+    for (auto& t : take_notes_) draw(t.start_ms, t.end_ms, t.note);
+    for (int ch = 0; ch < 16; ++ch)
+      for (int n = 0; n < 128; ++n)
+        if (take_open_[ch][n] >= 0) draw(take_open_[ch][n], pos, n);
+    g.PopClip();
+    g.Line(body.x, y + row_h - 0.5f, lanes.r(), y + row_h - 0.5f, Mix(theme::kLine, theme::kBg, 0.4f));
+  }
+  for (int row = take_rows; row < rows; ++row) {
     const float y = lanes.y + row * row_h - track_scroll_y_;
     if (y > lanes.b() || y + row_h < lanes.y) continue;
-    const int ti = visible_tracks_[row];
+    const int ti = visible_tracks_[row - take_rows];
     const SongTrack& track = song.tracks[ti];
     const int ch = FirstChannel(track.channel_mask);
     const Color color = theme::Channel(ch);
@@ -318,9 +558,9 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
     g.Fill(Rect(head.x, y + 1, 4, row_h - 2), color);
     char name[128];
     snprintf(name, sizeof(name), "%d  %s", ti + 1, track.name.empty() ? "(untitled)" : track.name.c_str());
-    const float btn_w = 24;
-    g.Text(name, Rect(head.x + 14, y + 4, head_w - 14 - 2 * btn_w - 16, 18), muted ? theme::kFaint : theme::kText, 12.5f,
-           Align::kLeft, true);
+    const float btn_w = 24, edit_w = 34;
+    g.Text(name, Rect(head.x + 14, y + 4, head_w - 14 - 2 * btn_w - edit_w - 20, 18), muted ? theme::kFaint : theme::kText,
+           12.5f, Align::kLeft, true);
     char detail[128];
     int nch = 0;
     for (int c = 0; c < 16; ++c) nch += (track.channel_mask >> c) & 1;
@@ -328,15 +568,26 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
              track.program >= 0 ? ProgramName(track.program) : ProgramName(ch == 9 ? 128 : 0), track.notes.size());
     if (row_h >= 40)
       g.Text(detail, Rect(head.x + 14, y + 22, head_w - 22, 16), theme::kDim, 10.5f);
+    const Rect edit_r(head.r() - 2 * btn_w - edit_w - 16, y + 5, edit_w, 18);
     const Rect mute_r(head.r() - 2 * btn_w - 12, y + 5, btn_w, 18), solo_r(head.r() - btn_w - 8, y + 5, btn_w, 18);
+    if (ui_.Button(Id(&track, 4), edit_r, "Edit", false, theme::kAccent, 10.5f)) OpenEditor(ti);
+    if (ui_.Hover(edit_r)) ui_.Tooltip("Edit the notes (piano roll)  -  or double-click the track", edit_r.cx(), edit_r.y);
     if (ui_.Button(Id(&track, 1), mute_r, "M", muted, theme::kOrange, 11)) midi_synth_->set_track_muted(ti, !muted);
     if (ui_.Button(Id(&track, 2), solo_r, "S", soloed, theme::kYellow, 11)) midi_synth_->set_track_solo(ti, !soloed);
+    if (ui_.Hover(head) && ui_.in.dbl && ui_.in.pressed) {
+      ui_.in.pressed = false;
+      OpenEditor(ti);
+    }
     if (ui_.Clicked(Id(&track, 3), head)) selected_strip_ = ch;
 
     // lane
     const Rect lane(lanes.x, y, lanes.w, row_h);
     if (row & 1) g.Fill(lane, WithAlpha(theme::kPanel, 0.35f));
     g.Line(body.x, y + row_h - 0.5f, lanes.r(), y + row_h - 0.5f, Mix(theme::kLine, theme::kBg, 0.4f));
+    if (track.notes.empty()) {
+      g.Text("empty - click Edit to draw notes, or record", Rect(lanes.x + 12, y, 400, row_h), theme::kFaint, 11);
+      continue;
+    }
     int lo = track.low_note, hi = track.high_note;
     if (hi - lo < 12) {
       const int mid = (lo + hi) / 2;
@@ -360,33 +611,28 @@ void ClientMainWindow::DrawTrackView(const Rect& area) {
     }
     g.PopClip();
   }
+  if (rows == 0)
+    g.Text("Empty song: press \xE2\x97\x8F Record (Ctrl+R) to record from a MIDI keyboard or the PC keys, or + Track to draw notes",
+           Rect(lanes.x + 16, lanes.y + 10, lanes.w - 32, 24), theme::kDim, 12);
   ui_.Unclip();
   g.Line(lanes.x - 0.5f, ruler.y, lanes.x - 0.5f, lanes.b(), theme::kLine);
 
-  // Seek: click or drag in the ruler or lanes; the jump happens on release.
-  const Rect seek_area(lanes.x, ruler.y, lanes.w, ruler.h + lanes.h);
+  // Seek: click or drag in the lanes; the jump happens on release.
   const WidgetId seek_id = Id(this, 30);
-  auto ms_at = [&](float px) { return std::clamp(view_start_ms_ + (px - lanes.x) * ms_per_px_, 0.0, song.length_ms); };
-  if (ui_.Press(seek_id, seek_area)) {
+  auto ms_at = [&](float px) { return std::max(0.0, view_start_ms_ + (px - lanes.x) * ms_per_px_); };
+  if (ui_.Press(seek_id, lanes)) {
     seek_dragging_ = true;
     seek_preview_ms_ = ms_at(ui_.in.mx);
   }
-  if (seek_dragging_) {
+  if (ui_.active == seek_id && seek_dragging_) {
     seek_preview_ms_ = ms_at(ui_.in.mx);
     if (!ui_.in.down) {
       seek_dragging_ = false;
-      if (ui_.active == seek_id) ui_.active = 0;
+      ui_.active = 0;
       Seek(seek_preview_ms_);
     }
   }
-
-  // Playhead
-  const float px = x_of(PlayheadMs());
-  if (px >= lanes.x && px <= lanes.r()) {
-    const Color c = seek_dragging_ ? theme::kYellow : theme::kText;
-    g.Line(px, ruler.y + 6, px, lanes.b(), WithAlpha(c, 0.9f), 1.5f);
-    g.FillTriangle(px - 6, ruler.y + 2, px + 6, ruler.y + 2, px, ruler.y + 10, c);
-  }
+  DrawLoopAndPlayhead(ruler, lanes, view_start_ms_, ms_per_px_);
 
   // Horizontal scrollbar
   g.Fill(Rect(body.x, hbar.y, body.w, hbar.h), theme::kPanel);
@@ -459,6 +705,9 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
   if (ui_.Hover(follow_r))
     ui_.Tooltip("Add the reverb and chorus levels the MIDI file asks for (CC91/CC93) to each strip's sends",
                 follow_r.cx(), follow_r.y);
+  const Rect reset_r(follow_r.x - 84, follow_r.y, 78, 20);
+  if (ui_.Button(Id(this, 42), reset_r, "Reset all", false, theme::kAccent, 10.5f)) mixer.ResetAll();
+  if (ui_.Hover(reset_r)) ui_.Tooltip("Every strip and the master back to defaults", reset_r.cx(), reset_r.y);
 
   const float y0 = area.y + 28, h = area.h - 28 - 8;
   const float master_w = 96;

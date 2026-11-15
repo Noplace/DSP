@@ -87,7 +87,10 @@
     <ClCompile Include="Code\client_main_window.cpp" />
     <ClCompile Include="Code\exporter.cpp" />
     <ClCompile Include="Code\gfx.cpp" />
+    <ClCompile Include="Code\piano_roll.cpp" />
     <ClCompile Include="Code\session.cpp" />
+    <ClCompile Include="Code\splash.cpp" />
+    <ClCompile Include="Code\studio_edit.cpp" />
     <ClCompile Include="Code\studio_files.cpp" />
     <ClCompile Include="Code\studio_views.cpp" />
     <ClCompile Include="Code\ui.cpp" />
@@ -99,6 +102,7 @@
     <ClInclude Include="Code\gfx.h" />
     <ClInclude Include="Code\global.h" />
     <ClInclude Include="Code\session.h" />
+    <ClInclude Include="Code\splash.h" />
     <ClInclude Include="Code\ui.h" />
     <ClInclude Include="Code\timer.h" />
   </ItemGroup>

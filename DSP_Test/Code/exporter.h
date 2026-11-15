@@ -18,6 +18,7 @@ struct ExportSettings {
   int channel_override[16];
   bool follow_midi_sends = false;
   bool track_mute[64], track_solo[64];
+  dsp::audio::synth::SongInfo song;  // the song as it is now (edits included), rendered at speed 1, no loop
   // Copies everything above (except the paths) from the live synth.
   void CaptureFrom(dsp::audio::synth::MidiSynth& synth);
 };

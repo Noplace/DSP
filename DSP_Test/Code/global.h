@@ -15,4 +15,5 @@
 #include "ui.h"
 #include "session.h"
 #include "exporter.h"
+#include "splash.h"
 #include "client_main_window.h"
