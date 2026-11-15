@@ -59,6 +59,13 @@ void MidiLoader::Load(uint8_t* data,size_t length) {
 			  Event event;
         readEvent(trackStream,event);
         event.track = i;
+        if (i < 64 && event.type == kEventTypeMeta && track_names[i].empty() &&
+            (event.subtype == kEventSubtypeTrackName || event.subtype == kEventSubtypeInstrumentName)) {
+          // Trim trailing NULs/spaces some sequencers leave in names.
+          while (!last_text_.empty() && (last_text_.back() == '\0' || last_text_.back() == ' '))
+            last_text_.pop_back();
+          track_names[i] = last_text_;
+        }
 			  eventList[i].push_back(event);
 			  //console.log(event);
 		  }
@@ -96,11 +103,11 @@ void MidiLoader::readEvent(Stream& stream,Event& event) {
 					return;
 				case 0x03:
 					event.subtype = kEventSubtypeTrackName;
-					stream.read(length);
+					last_text_.assign((const char*)stream.read(length), length);
 					return;
 				case 0x04:
 					event.subtype = kEventSubtypeInstrumentName;
-					stream.read(length);
+					last_text_.assign((const char*)stream.read(length), length);
 					return;
 				case 0x05:
 					event.subtype = kEventSubtypeLyrics;

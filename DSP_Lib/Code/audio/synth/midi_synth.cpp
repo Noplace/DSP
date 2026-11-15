@@ -293,6 +293,10 @@ void MidiSynth::Initialize() {
   delay_unit.set_feedback(0.3f);
   delay_unit.set_delay_ms(400.0f);
 
+  mixer.Initialize(sample_rate_, uint32_t(buffers.main_size / 2));
+  for (int i = 0; i < kChannelCount; ++i)
+    channel_program_[i] = i == 9 ? 128 : 0;  // 128 = drum kit
+
   tracks = nullptr;
 
   if (mode_ == kModeTest) {
@@ -318,6 +322,7 @@ void MidiSynth::Deinitialize() {
     return;
   DeleteCriticalSection(&me_lock);
   delay_unit.Deinitialize();
+  mixer.Deinitialize();
   DestroyTrackData();
   for (int i=0;i<kChannelCount;++i) {
     SafeDelete(&channels[i]);
@@ -484,11 +489,155 @@ void MidiSynth::LoadMidi(uint8_t* data, size_t data_size) {
           player_->song_length_ms = max(player_->song_length_ms, ev.abs_time_ms);
       }
     }
+
+    // Tempo map and bar/beat grid for the UI.
+    song_ = SongInfo();
+    song_.length_ms = player_->song_length_ms;
+    if (tempo_map.empty() || tempo_map[0].tick != 0)
+      song_.tempo.push_back({0.0, 120.0});
+    for (auto& tc : tempo_map)
+      song_.tempo.push_back({tick_to_ms(tc.tick), 60000000.0 / tc.us_per_beat});
+    struct Signature { uint64_t tick; int num, den; };
+    std::vector<Signature> sigs;
+    uint64_t last_tick = 0;
+    for (int t = 0; t < track_count_; ++t) {
+      uint64_t tick = 0;
+      for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
+        auto& ev = tracks[t].event_sequence[e];
+        tick += ev.deltaTime;
+        if (ev.type == midi::kEventTypeChannel) last_tick = max(last_tick, tick);
+        if (ev.type == midi::kEventTypeMeta && ev.subtype == midi::kEventSubtypeTimeSignature &&
+            ev.data.time_signature.numerator > 0 && ev.data.time_signature.denominator > 0)
+          sigs.push_back({tick, ev.data.time_signature.numerator, ev.data.time_signature.denominator});
+      }
+    }
+    std::stable_sort(sigs.begin(), sigs.end(), [](const Signature& a, const Signature& b) { return a.tick < b.tick; });
+    int num = 4, den = 4, bar = 1, beat = 0;
+    size_t next_sig = 0;
+    uint64_t tick = 0;
+    while (tick <= last_tick + uint64_t(tpb) * 4 && song_.beats.size() < 100000) {
+      while (next_sig < sigs.size() && sigs[next_sig].tick <= tick) {
+        num = sigs[next_sig].num;
+        den = sigs[next_sig].den;
+        if (beat != 0) { ++bar; beat = 0; }  // a new signature starts a new bar
+        ++next_sig;
+      }
+      song_.beats.push_back({tick_to_ms(tick), bar, beat});
+      const uint64_t step = uint64_t(tpb * 4 / den);
+      tick += step ? step : 1;
+      if (++beat >= num) { beat = 0; ++bar; }
+    }
   }
+  BuildSongInfo(midifile);
+  track_mute_mask_ = 0;
+  track_solo_mask_ = 0;
 
   if (program_override_ >= 0)
     set_program_override(program_override_);  // songs without program changes start on it too
   Reset();
+}
+
+void MidiSynth::BuildSongInfo(const midi::MidiLoader& file) {
+  song_.tracks.resize(track_count_);
+  for (int t = 0; t < track_count_; ++t) {
+    SongTrack& st = song_.tracks[t];
+    if (t < 64) st.name = file.track_names[t];
+    float start[16][128];
+    uint8_t velocity[16][128];
+    for (auto& row : start) for (auto& v : row) v = -1.0f;
+    double last_ms = 0;
+    auto close = [&](int ch, int note, double end_ms) {
+      if (start[ch][note] < 0) return;
+      st.notes.push_back({start[ch][note], float(end_ms), uint8_t(note), velocity[ch][note], uint8_t(ch)});
+      start[ch][note] = -1.0f;
+    };
+    for (uint32_t e = 0; e < tracks[t].event_count; ++e) {
+      const auto& ev = tracks[t].event_sequence[e];
+      if (ev.type != midi::kEventTypeChannel) continue;
+      const int ch = ev.channel & 15;
+      last_ms = ev.abs_time_ms;
+      st.channel_mask |= uint16_t(1 << ch);
+      switch (ev.subtype) {
+        case midi::kEventSubtypeNoteOn: {
+          const int note = ev.data.note.noteNumber & 127;
+          close(ch, note, ev.abs_time_ms);  // re-struck without a note-off
+          start[ch][note] = float(ev.abs_time_ms);
+          velocity[ch][note] = ev.data.note.velocity;
+          break;
+        }
+        case midi::kEventSubtypeNoteOff:
+          close(ch, ev.data.note.noteNumber & 127, ev.abs_time_ms);
+          break;
+        case midi::kEventSubtypeProgramChange:
+          if (st.program < 0) st.program = ch == 9 ? 128 : ev.data.program.number;
+          break;
+        default:
+          break;
+      }
+    }
+    for (int ch = 0; ch < 16; ++ch)
+      for (int n = 0; n < 128; ++n) close(ch, n, last_ms);
+    std::sort(st.notes.begin(), st.notes.end(), [](const SongNote& a, const SongNote& b) { return a.start_ms < b.start_ms; });
+    for (auto& n : st.notes) {
+      if (n.note < st.low_note) st.low_note = n.note;
+      if (n.note > st.high_note) st.high_note = n.note;
+    }
+    if (st.program < 0 && (st.channel_mask & (1 << 9))) st.program = 128;
+  }
+  song_.loaded = true;
+}
+
+void MidiSynth::ResetChannelsToDefaults() {
+  for (int i = 0; i < kChannelCount; ++i) {
+    auto c = channels[i];
+    if (i == 9) {
+      c->set_instrument(drum_kit_);
+      channel_program_[i] = 128;
+    } else {
+      const int program = program_override_ >= 0 ? program_override_ : 0;
+      c->set_instrument(instr[program & 127]);
+      channel_program_[i] = program;
+    }
+    c->ResetControllers();
+    c->set_amplification(100 / 127.0f);
+    c->set_panning(0.5f);
+    c->set_pitch_bend_range(2.0f);
+    c->param_coarse = c->param_fine = 127;
+    c->des_coarse = 2;
+    c->des_fine = 0;
+  }
+}
+
+// Rewinds every track, then replays everything but notes up to the target so programs,
+// controllers and tempo are what they would be there, and schedules the first event after it.
+void MidiSynth::Seek(double target_ms) {
+  if (!initialized_ || mode_ != kModeSequencer || track_count_ == 0 || tracks == nullptr)
+    return;
+  AllNotesOff();
+  ResetChannelsToDefaults();
+  for (int t = 0; t < track_count_; ++t) {
+    tracks[t].event_index = 0;
+    tracks[t].ticks_to_next_event = tracks[t].event_count ? tracks[t].event_sequence[0].deltaTime : 0xFFFFFFFF;
+  }
+  bpm = 120;
+  last_event = nullptr;
+  samples_to_next_event = 0xFFFFFFFF;
+  if (target_ms < 0) target_ms = 0;
+  while (true) {
+    samples_to_next_event = 0;
+    midi::Event* ev = GetNextEvent();  // at the end this stops the player, which is right
+    if (ev == nullptr) {
+      samples_to_next_event = 0xFFFFFFFF;
+      break;
+    }
+    if (ev->abs_time_ms >= target_ms) {
+      last_event = ev;
+      samples_to_next_event = uint32_t((ev->abs_time_ms - target_ms) * 0.001 * sample_rate_);
+      break;
+    }
+    if (ev->subtype != midi::kEventSubtypeNoteOn && ev->subtype != midi::kEventSubtypeNoteOff)
+      HandleEvent(ev);
+  }
 }
 
 
@@ -517,6 +666,7 @@ void MidiSynth::HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) 
   midi::Event ev;
   ev.type = midi::kEventTypeChannel;
   ev.channel = channel;
+  ev.track = 0xFF;  // live input: not subject to file track mute/solo
   switch (type) {
     case 0x80:
       ev.subtype = midi::kEventSubtypeNoteOff;
@@ -638,144 +788,12 @@ void MidiSynth::GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_o
 }
 
 void MidiSynth::MixChannelsStereo(uint32_t samples_to_generate) {
-  
-    channels[0]->RenderStereo(samples_to_generate);
-    channels[1]->RenderStereo(samples_to_generate);
-    channels[2]->RenderStereo(samples_to_generate);
-    channels[3]->RenderStereo(samples_to_generate);
-    channels[4]->RenderStereo(samples_to_generate);
-    channels[5]->RenderStereo(samples_to_generate);
-    channels[6]->RenderStereo(samples_to_generate);
-    channels[7]->RenderStereo(samples_to_generate);
-    channels[8]->RenderStereo(samples_to_generate);
-    channels[9]->RenderStereo(samples_to_generate);
-    channels[10]->RenderStereo(samples_to_generate);
-    channels[11]->RenderStereo(samples_to_generate);
-    channels[12]->RenderStereo(samples_to_generate);
-    channels[13]->RenderStereo(samples_to_generate);
-    channels[14]->RenderStereo(samples_to_generate);
-    channels[15]->RenderStereo(samples_to_generate);
-
-    for (uint32_t i=0;i<samples_to_generate<<1;++i) {
-      buffers.main[i] = buffers.channels[0][i]+buffers.channels[1][i]+buffers.channels[2][i]+buffers.channels[3][i] +
-                        buffers.channels[4][i]+buffers.channels[5][i]+buffers.channels[6][i]+buffers.channels[7][i] +
-                        buffers.channels[8][i]+buffers.channels[9][i]+buffers.channels[10][i]+buffers.channels[11][i] +
-                        buffers.channels[12][i]+buffers.channels[13][i]+buffers.channels[14][i]+buffers.channels[15][i];
-
-      buffers.aux[i]  = buffers.channels[0][i]*channels[0]->aux_send   + buffers.channels[1][i]*channels[1]->aux_send   + buffers.channels[2][i]*channels[2]->aux_send   + buffers.channels[3][i]*channels[3]->aux_send   +
-                        buffers.channels[4][i]*channels[4]->aux_send   + buffers.channels[5][i]*channels[5]->aux_send   + buffers.channels[6][i]*channels[6]->aux_send   + buffers.channels[7][i]*channels[7]->aux_send   +
-                        buffers.channels[8][i]*channels[8]->aux_send   + buffers.channels[9][i]*channels[9]->aux_send   + buffers.channels[10][i]*channels[10]->aux_send + buffers.channels[11][i]*channels[11]->aux_send +
-                        buffers.channels[12][i]*channels[12]->aux_send + buffers.channels[13][i]*channels[13]->aux_send + buffers.channels[14][i]*channels[14]->aux_send + buffers.channels[15][i]*channels[15]->aux_send;
-
-      ++i;
-      buffers.main[i] = buffers.channels[0][i]+buffers.channels[1][i]+buffers.channels[2][i]+buffers.channels[3][i] +
-                        buffers.channels[4][i]+buffers.channels[5][i]+buffers.channels[6][i]+buffers.channels[7][i] +
-                        buffers.channels[8][i]+buffers.channels[9][i]+buffers.channels[10][i]+buffers.channels[11][i] +
-                        buffers.channels[12][i]+buffers.channels[13][i]+buffers.channels[14][i]+buffers.channels[15][i];
-
-
-      buffers.aux[i]  = buffers.channels[0][i]*channels[0]->aux_send   + buffers.channels[1][i]*channels[1]->aux_send   + buffers.channels[2][i]*channels[2]->aux_send   + buffers.channels[3][i]*channels[3]->aux_send   +
-                        buffers.channels[4][i]*channels[4]->aux_send   + buffers.channels[5][i]*channels[5]->aux_send   + buffers.channels[6][i]*channels[6]->aux_send   + buffers.channels[7][i]*channels[7]->aux_send   +
-                        buffers.channels[8][i]*channels[8]->aux_send   + buffers.channels[9][i]*channels[9]->aux_send   + buffers.channels[10][i]*channels[10]->aux_send + buffers.channels[11][i]*channels[11]->aux_send +
-                        buffers.channels[12][i]*channels[12]->aux_send + buffers.channels[13][i]*channels[13]->aux_send + buffers.channels[14][i]*channels[14]->aux_send + buffers.channels[15][i]*channels[15]->aux_send;
-      
-    }
-
-
-  /*__m128 channel_buffer[4];
-  //render and mix each chanel
-  auto mainbufptr = buffers.main;
-  memset(mainbufptr,0,sizeof(real_t)*samples_to_generate*2);
-  auto bufptr = (real_t* __restrict)channel_buffer;
-  for (uint32_t j=0;j<kChannelCount;j+=4) { //mix all 16 channels
-
-    /*
-      for (uint32_t i=0;i<samples_to_generate;++i) {
-        __m128 s[2] = {0,0};
-        auto sample = (float* __restrict)s;
-        for (int n=0;n<Polyphony;++n) {
-          if (channels[j]->silence_ == false)
-            sample[0] += channels[j+0]->instrument_->Tick(channels[j+0]->instrument_data_,n);
-          if (channels[j+1]->silence_ == false)
-            sample[1] += channels[j+1]->instrument_->Tick(channels[j+1]->instrument_data_,n);
-          if (channels[j+2]->silence_ == false)
-            sample[2] += channels[j+2]->instrument_->Tick(channels[j+2]->instrument_data_,n);
-          if (channels[j+3]->silence_ == false)
-            sample[3] += channels[j+3]->instrument_->Tick(channels[j+3]->instrument_data_,n);
-          if (channels[j+4]->silence_ == false)
-            sample[4] += channels[j+4]->instrument_->Tick(channels[j+4]->instrument_data_,n);
-          if (channels[j+5]->silence_ == false)
-            sample[5] += channels[j+5]->instrument_->Tick(channels[j+5]->instrument_data_,n);
-          if (channels[j+6]->silence_ == false)
-            sample[6] += channels[j+6]->instrument_->Tick(channels[j+6]->instrument_data_,n);
-          if (channels[j+7]->silence_ == false)
-            sample[7] += channels[j+7]->instrument_->Tick(channels[j+7]->instrument_data_,n);
-        }
-        __m128 pan[4],amp[2];
-        auto pan_array = (float* __restrict)pan;
-        auto amp_array = (float* __restrict)amp;
-
-        pan_array[0] = channels[j]->pan_l;
-        pan_array[1] = channels[j+1]->pan_l;
-        pan_array[2] = channels[j+2]->pan_l;
-        pan_array[3] = channels[j+3]->pan_l;
-        pan_array[4] = channels[j+4]->pan_l;
-        pan_array[5] = channels[j+5]->pan_l;
-        pan_array[6] = channels[j+6]->pan_l;
-        pan_array[7] = channels[j+7]->pan_l;
-        pan_array[8] = channels[j]->pan_r;
-        pan_array[9] = channels[j+1]->pan_r;
-        pan_array[10] = channels[j+2]->pan_r;
-        pan_array[11] = channels[j+3]->pan_r;
-        pan_array[12] = channels[j+4]->pan_r;
-        pan_array[13] = channels[j+5]->pan_r;
-        pan_array[14] = channels[j+6]->pan_r;
-        pan_array[15] = channels[j+7]->pan_r;
-
-        amp_array[0] = channels[j]->amplification_;
-        amp_array[1] = channels[j+1]->amplification_;
-        amp_array[2] = channels[j+2]->amplification_;
-        amp_array[3] = channels[j+3]->amplification_;
-        amp_array[4] = channels[j+4]->amplification_;
-        amp_array[5] = channels[j+5]->amplification_;
-        amp_array[6] = channels[j+6]->amplification_;
-        amp_array[7] = channels[j+7]->amplification_;
-        
-        auto left1 = _mm_mul_ps(pan[0],s[0]);
-        auto left2 = _mm_mul_ps(pan[1],s[1]);
-        left1 = _mm_mul_ps(left1,amp[0]);
-        left2 = _mm_mul_ps(left2,amp[1]);
-        
-        auto right1 = _mm_mul_ps(pan[2],s[0]);
-        auto right2 = _mm_mul_ps(pan[3],s[1]);
-        right1 = _mm_mul_ps(right1,amp[0]);
-        right2 = _mm_mul_ps(right2,amp[1]);
-
-        __m128 result1,result2;
-        result1 = _mm_add_ps(left1,left2);
-        result2 = _mm_add_ps(right1,right2);
-
-        *mainbufptr++ = result1.m128_f32[0]+result1.m128_f32[1]+result1.m128_f32[2]+result1.m128_f32[3];
-        *mainbufptr++ = result2.m128_f32[0]+result2.m128_f32[1]+result2.m128_f32[2]+result2.m128_f32[3];
-
-      }
-    */
-    /*
-    channels[j+0]->Render(samples_to_generate);
-    channels[j+1]->Render(samples_to_generate);
-    channels[j+2]->Render(samples_to_generate);
-    channels[j+3]->Render(samples_to_generate);
-    auto buf0 = channels[j+0]->buffer();
-    auto buf1 = channels[j+1]->buffer();
-    auto buf2 = channels[j+2]->buffer();
-    auto buf3 = channels[j+3]->buffer();
-    
-    for (uint32_t i=0;i<samples_to_generate<<1;++i) {
-      mainbufptr[i] += buf0[i]+buf1[i]+buf2[i]+buf3[i];
-      ++i;
-      mainbufptr[i] += buf0[i]+buf1[i]+buf2[i]+buf3[i];
-    }
-  }*/
+  for (int i = 0; i < kChannelCount; ++i)
+    channels[i]->RenderStereo(samples_to_generate);
+  // Channel strips (filters, EQ, dynamics, fader, sends) and the master bus. With every
+  // section off and faders at 0 dB this is exactly the plain sum of the channels.
+  mixer.Process(buffers.channels, samples_to_generate, buffers.main);
+  memset(buffers.aux, 0, sizeof(real_t) * samples_to_generate * 2);
 }
 
 midi::Event* MidiSynth::GetNextEvent() {
@@ -861,6 +879,8 @@ void MidiSynth::MidiEventChannel(midi::Event* event) {
 }
 
 void MidiSynth::MidiEventNoteOn(midi::Event* event) {
+  if (!TrackAudible(event->track))
+    return;  // muted track (its note-offs still go through)
   auto channel = channels[event->channel];
   real_t frequency = chromatic_scale_freq[(Notes)event->data.note.noteNumber];
   channel->AddNote(event->data.note.noteNumber,frequency,event->data.note.velocity / 127.0f);
@@ -878,6 +898,7 @@ void MidiSynth::MidiEventProgramChange(midi::Event* event) {
   } else {
     int program = program_override_ >= 0 ? program_override_ : event->data.program.number;
     channel->set_instrument(instr[program & 127]);
+    channel_program_[event->channel] = program & 127;
   }
   channel->set_silence(false);
 }
@@ -886,7 +907,10 @@ void MidiSynth::set_program_override(int program) {
   program_override_ = program;
   if (initialized_ && program >= 0)
     for (int i = 0; i < kChannelCount; ++i)
-      if (i != 9) channels[i]->set_instrument(instr[program & 127]);
+      if (i != 9) {
+        channels[i]->set_instrument(instr[program & 127]);
+        channel_program_[i] = program & 127;
+      }
 }
 
 void MidiSynth::MidiEventController(midi::Event* event) {

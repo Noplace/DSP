@@ -50,6 +50,8 @@
 #include "audio/synth/effects/effect.h"
 #include "audio/synth/effects/delay.h"
 #include "audio/synth/effects/limiter.h"
+#include "audio/synth/effects/biquad.h"
+#include "audio/synth/effects/mixer.h"
 
 #include "audio/synth/oscillators/oscillator.h"
 #include "audio/synth/oscillators/sine_oscillator.h"

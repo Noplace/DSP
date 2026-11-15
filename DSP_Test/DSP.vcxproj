@@ -85,11 +85,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Code\client_main_window.cpp" />
+    <ClCompile Include="Code\gfx.cpp" />
+    <ClCompile Include="Code\studio_views.cpp" />
+    <ClCompile Include="Code\ui.cpp" />
     <ClCompile Include="Code\winmain.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Code\client_main_window.h" />
+    <ClInclude Include="Code\gfx.h" />
     <ClInclude Include="Code\global.h" />
+    <ClInclude Include="Code\ui.h" />
     <ClInclude Include="Code\timer.h" />
   </ItemGroup>
   <ItemGroup>

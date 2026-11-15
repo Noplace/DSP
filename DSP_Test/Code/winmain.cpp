@@ -56,6 +56,8 @@ class Win32App  {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pScmdline, int iCmdshow) {
+  // Crisp rendering on high-DPI screens; the UI lays out in DIPs.
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   demo::Win32App app(hInstance,hPrevInstance,pScmdline,iCmdshow);
   return app.Run();
 }

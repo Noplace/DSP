@@ -34,6 +34,36 @@ static void for_each_note(F f) {
   }
 }
 
+// What the UI shows of a loaded file: tracks with their notes, bar/beat grid and tempo map.
+// Built by LoadMidi(); only the thread that loads files touches it.
+struct SongNote {
+  float start_ms, end_ms;
+  uint8_t note, velocity, channel;
+};
+struct SongTrack {
+  std::string name;
+  std::vector<SongNote> notes;   // sorted by start time
+  uint16_t channel_mask = 0;     // channels the track's channel events use
+  int program = -1;              // first program change (-1 = none)
+  int low_note = 127, high_note = 0;
+};
+struct SongBeat {
+  double ms;
+  int bar;   // 1-based
+  int beat;  // 0 = downbeat
+};
+struct SongTempo {
+  double ms;
+  double bpm;
+};
+struct SongInfo {
+  std::vector<SongTrack> tracks;  // index = file track index
+  std::vector<SongBeat> beats;
+  std::vector<SongTempo> tempo;
+  double length_ms = 0;
+  bool loaded = false;
+};
+
 class MidiSynth : public Synth {
  public:
   typedef void (MidiSynth::*MidiEventHandler)(midi::Event* event);
@@ -88,6 +118,19 @@ class MidiSynth : public Synth {
   int program_override() const { return program_override_; }
   // Names of the calibrated instruments in use (empty if none were found).
   const std::vector<std::string>& calibrated_instruments() const { return calibrated_instruments_; }
+
+  void Seek(double ms) override;
+  const SongInfo& song() const { return song_; }
+  // Track mute/solo (file tracks 0..63): muted tracks start no new notes. Any thread.
+  void set_track_muted(int track, bool muted) { SetTrackBit(track_mute_mask_, track, muted); }
+  void set_track_solo(int track, bool solo) { SetTrackBit(track_solo_mask_, track, solo); }
+  bool track_muted(int track) const { return track < 64 && (track_mute_mask_.load() >> track) & 1; }
+  bool track_solo(int track) const { return track < 64 && (track_solo_mask_.load() >> track) & 1; }
+  // GM program currently selected on a channel (any thread; approximate while it changes).
+  int channel_program(int channel) const { return channel_program_[channel & 15].load(std::memory_order_relaxed); }
+
+  // Channel strips, FX buses and master bus between the channels and the output.
+  effects::Mixer mixer;
   effects::Effect* aux_effects[kEffectCount];
   effects::Effect* main_effects[kEffectCount];
   effects::Delay delay_unit;
@@ -119,6 +162,22 @@ class MidiSynth : public Synth {
     samples_to_next_event = 0;
   }
   void BuildInstrumentBank();
+  void BuildSongInfo(const midi::MidiLoader& file);
+  void ResetChannelsToDefaults();
+  static void SetTrackBit(std::atomic<uint64_t>& mask, int track, bool on) {
+    if (track < 0 || track >= 64) return;
+    if (on) mask.fetch_or(uint64_t(1) << track); else mask.fetch_and(~(uint64_t(1) << track));
+  }
+  bool TrackAudible(uint8_t track) const {
+    if (track >= 64) return true;  // live input
+    const uint64_t bit = uint64_t(1) << track;
+    const uint64_t solo = track_solo_mask_.load(std::memory_order_relaxed);
+    if (track_mute_mask_.load(std::memory_order_relaxed) & bit) return false;
+    return solo == 0 || (solo & bit) != 0;
+  }
+  SongInfo song_;
+  std::atomic<uint64_t> track_mute_mask_{0}, track_solo_mask_{0};
+  std::atomic<int> channel_program_[16] = {};
   void GenerateIntoBufferStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void GenerateChunkStereo(uint32_t samples_to_generate, real_t* data_out, uint32_t& data_offset);
   void MixChannelsStereo(uint32_t samples_to_generate);

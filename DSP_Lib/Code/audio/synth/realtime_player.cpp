@@ -84,6 +84,19 @@ void RealtimePlayer::TogglePause() {
     Play();
 }
 
+void RealtimePlayer::Seek(double seconds) {
+  if (!ready_)
+    return;
+  if (seconds < 0)
+    seconds = 0;
+  WithSynthLocked([&] {
+    rewind_requested_ = false;  // a pending rewind would undo the seek
+    synth_->Seek(seconds * 1000.0);
+    frames_played_ = uint64_t(seconds * output_.sample_rate());
+  });
+  // Seeking while stopped arms the position for the next Play().
+}
+
 double RealtimePlayer::GetPlaybackSeconds() const {
   auto rate = output_.sample_rate();
   return rate ? double(frames_played_.load()) / rate : 0.0;

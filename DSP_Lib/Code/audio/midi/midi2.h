@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <string>
+
 
 namespace dsp {
 namespace audio {
@@ -213,6 +215,7 @@ class MidiLoader {
   
   uint32_t ticksPerBeat,track_count;
   std::vector<Event> eventList[64]; //max 64 tracks!
+  std::string track_names[64];       // first track-name meta event (or instrument name) of each track
   MidiLoader() : lastEventTypeByte(0),ticksPerBeat(0),track_count(0) {
 
   }
@@ -220,6 +223,7 @@ class MidiLoader {
   void Load(uint8_t* data,size_t length);
  protected:
 	uint8_t lastEventTypeByte;
+  std::string last_text_;  // text of the last track/instrument name event read
   Chunk readChunk(Stream& stream) {
     Chunk chunk;
     chunk.id = stream.read(4);

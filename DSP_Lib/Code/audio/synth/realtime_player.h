@@ -53,6 +53,8 @@ class RealtimePlayer : public SynthHost {
   void Pause();
   void Stop() override;
   void TogglePause();
+  // Jump file playback to a position (keeps the current play/pause state).
+  void Seek(double seconds);
 
   template <typename F>
   void WithSynthLocked(F&& f) {

@@ -17,177 +17,11 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "global.h"
+#include <windowsx.h>
 
 namespace demo {
 
-ClientMainWindow::ClientMainWindow() {
-  dispmode = 0;
-  class_ = 0;
-  synth_player_ = nullptr;
-  midi_synth_ = nullptr;
-  midi_name_[0] = 0;
-  octave_base_ = 60;  // Z = middle C
-  program_ = 0;
-  memset(held_note_, 0, sizeof(held_note_));
-  level_db_ = -120.0f;
-  limiter_db_ = 0.0f;
-  font_ = nullptr;
-  memset(display,0,sizeof(display));
-  display[0].style = WS_VISIBLE | WS_BORDER|WS_CAPTION|WS_MINIMIZEBOX|WS_SYSMENU|WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-  display[1].style = WS_POPUP | WS_VISIBLE | WS_MAXIMIZE;
-
-
-  memset(&display[0].mode, 0, sizeof(display[0].mode));
-	display[0].mode.dmSize       = sizeof(display[0].mode);
-	display[0].mode.dmPelsWidth  = (unsigned long)640;
-	display[0].mode.dmPelsHeight = (unsigned long)480;
-	display[0].mode.dmBitsPerPel = 32;			
-	display[0].mode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
- 
-  memset(&display[1].mode, 0, sizeof(display[1].mode));
-	display[1].mode.dmSize       = sizeof(display[1].mode);
-	display[1].mode.dmPelsWidth  = (unsigned long)640;
-	display[1].mode.dmPelsHeight = (unsigned long)480;
-	display[1].mode.dmBitsPerPel = 32;			
-	display[1].mode.dmFields     = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
-
- 
-
-  sprintf_s(title_,"DSP MIDI Synth");
-  sprintf_s(class_name_,"%s_class",title_);
-  memset(&window_class_,0,sizeof(window_class_));
-  window_class_.cbSize = sizeof(window_class_);
-  window_class_.cbClsExtra = 0;
-  window_class_.cbWndExtra = 0;
-  window_class_.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-  window_class_.lpfnWndProc = WindowProc;
-  window_class_.lpszClassName = class_name_;
-  window_class_.hCursor = LoadCursor((HINSTANCE) NULL, IDC_ARROW); 
-  window_class_.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)); 
-}
-
-ClientMainWindow::~ClientMainWindow() {
-  Destroy();
-}
-
-void ClientMainWindow::Create() {
-  class_ = RegisterClassEx(&window_class_);
-  CreateWindow(class_name_,title_,display[dispmode].style,0,0,100,100,NULL,NULL,NULL,this);
-  SetWindowText(handle_,title_);
-  dc_ = GetDC(handle_);
-  /*PIXELFORMATDESCRIPTOR pfd = {
-    0,1,PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0
-  };
-  SetPixelFormat(dc_, ChoosePixelFormat(dc_, &pfd) , &pfd);
-  */
-
-  
-}
-
-void ClientMainWindow::Start() {
-  midi_synth_ = new dsp::audio::synth::MidiSynth();
-  midi_synth_->set_mode(dsp::audio::synth::MidiSynth::kModeSequencer);
-  //midi_synth_->delay_unit.set_delay_ms(300.0f);
-  //midi_synth_->delay_unit.set_feedback(0.4f);
-  //midi_synth_->main_effects[0] = &midi_synth_->delay_unit;
-
-  // Low-latency WASAPI output; the synth runs at the device's sample rate.
-  synth_player_ = new dsp::audio::synth::RealtimePlayer();
-  if (!synth_player_->Initialize(midi_synth_)) {
-    MessageBoxA(handle_, synth_player_->last_error(), "Could not open audio device", MB_ICONERROR);
-  }
-  RescanMidiInputs();
-
-  //spc_player (legacy DirectSound path) is not wired up.
-
-  font_ = CreateFontA(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                      CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, "Consolas");
-  SetClientSize(760,300);
-  Center();
-  Show();
-  SetTimer(handle_, 1, 200, nullptr);  // refresh status (position, level)
-
-  // MIDI file: first command-line argument, otherwise ask with an Open dialog.
-  char midi_path[MAX_PATH] = {};
-  if (__argc > 1)
-    strncpy_s(midi_path, __argv[1], _TRUNCATE);
-  else if (!PromptForMidiFile(midi_path, sizeof(midi_path)))
-    midi_path[0] = 0;
-  if (midi_path[0] != 0)
-    OpenMidi(midi_path);
-  UpdateTitle();
-}
-
-bool ClientMainWindow::PromptForMidiFile(char* path, size_t path_size) {
-  OPENFILENAMEA ofn = {};
-  ofn.lStructSize = sizeof(ofn);
-  ofn.hwndOwner = handle_;
-  ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
-  ofn.lpstrFile = path;
-  ofn.nMaxFile = (DWORD)path_size;
-  ofn.lpstrTitle = "Open MIDI file";
-  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-  return GetOpenFileNameA(&ofn) != FALSE;
-}
-
-void ClientMainWindow::OpenMidi(const char* path) {
-  if (synth_player_ == nullptr)
-    return;
-  // Loading replaces the synth's track data, so keep the audio thread out while it happens.
-  synth_player_->WithSynthLocked([&] { midi_synth_->LoadMidiFromFile(path); });
-  const char* name = strrchr(path, '\\');
-  strncpy_s(midi_name_, name ? name + 1 : path, _TRUNCATE);
-  synth_player_->Play();
-}
-
-void ClientMainWindow::RescanMidiInputs() {
-  if (synth_player_ == nullptr)
-    return;
-  ReleaseHeldNotes();
-  // Ports are opened/closed while the audio thread is kept out of the synth.
-  synth_player_->WithSynthLocked([&] {
-    midi_input_.OpenAll();
-    synth_player_->set_midi_input(&midi_input_);
-  });
-}
-
-void ClientMainWindow::SendLive(uint8_t status, uint8_t data1, uint8_t data2) {
-  if (synth_player_ != nullptr)
-    synth_player_->PostMidiMessage(status, data1, data2);
-}
-
-void ClientMainWindow::ReleaseHeldNotes() {
-  SendLive(0xB0, 64, 0);  // sustain pedal up as well
-  for (int vk = 0; vk < 256; ++vk) {
-    if (held_note_[vk]) {
-      SendLive(0x80, uint8_t(held_note_[vk] - 1), 64);
-      held_note_[vk] = 0;
-    }
-  }
-}
-
 namespace {
-
-// Tracker-style layout: bottom two rows are one octave from octave_base_, top two rows the next.
-int PianoKeyOffset(WPARAM vk) {
-  switch (vk) {
-    case 'Z': return 0;  case 'S': return 1;  case 'X': return 2;  case 'D': return 3;
-    case 'C': return 4;  case 'V': return 5;  case 'G': return 6;  case 'B': return 7;
-    case 'H': return 8;  case 'N': return 9;  case 'J': return 10; case 'M': return 11;
-    case VK_OEM_COMMA: return 12; case 'L': return 13; case VK_OEM_PERIOD: return 14;
-    case 'Q': return 12; case '2': return 13; case 'W': return 14; case '3': return 15;
-    case 'E': return 16; case 'R': return 17; case '5': return 18; case 'T': return 19;
-    case '6': return 20; case 'Y': return 21; case '7': return 22; case 'U': return 23;
-    case 'I': return 24; case '9': return 25; case 'O': return 26; case '0': return 27;
-    case 'P': return 28;
-  }
-  return -1;
-}
-
-const char* NoteName(int note) {
-  static const char* names[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
-  return names[note % 12];
-}
 
 const char* GmProgramName(int program) {
   static const char* names[128] = {
@@ -218,7 +52,249 @@ const char* GmProgramName(int program) {
   return names[program & 127];
 }
 
+// Tracker-style layout: bottom two rows are one octave from octave_base_, top two rows the next.
+int PianoKeyOffset(WPARAM vk) {
+  switch (vk) {
+    case 'Z': return 0;  case 'S': return 1;  case 'X': return 2;  case 'D': return 3;
+    case 'C': return 4;  case 'V': return 5;  case 'G': return 6;  case 'B': return 7;
+    case 'H': return 8;  case 'N': return 9;  case 'J': return 10; case 'M': return 11;
+    case VK_OEM_COMMA: return 12; case 'L': return 13; case VK_OEM_PERIOD: return 14;
+    case 'Q': return 12; case '2': return 13; case 'W': return 14; case '3': return 15;
+    case 'E': return 16; case 'R': return 17; case '5': return 18; case 'T': return 19;
+    case '6': return 20; case 'Y': return 21; case '7': return 22; case 'U': return 23;
+    case 'I': return 24; case '9': return 25; case 'O': return 26; case '0': return 27;
+    case 'P': return 28;
+  }
+  return -1;
+}
+
+// In-place radix-2 FFT (n a power of two).
+void Fft(float* re, float* im, int n) {
+  for (int i = 1, j = 0; i < n; ++i) {
+    int bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
+  }
+  for (int len = 2; len <= n; len <<= 1) {
+    const double ang = -2.0 * 3.14159265358979323846 / len;
+    const float wr = float(cos(ang)), wi = float(sin(ang));
+    for (int i = 0; i < n; i += len) {
+      float cr = 1, ci = 0;
+      for (int k = 0; k < len / 2; ++k) {
+        const int a = i + k, b = a + len / 2;
+        const float tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti;
+        re[a] += tr; im[a] += ti;
+        const float ncr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr;
+        cr = ncr;
+      }
+    }
+  }
+}
+
+const int kFftSize = 4096;
+
+double NowSeconds() {
+  static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return double(now.QuadPart) / freq.QuadPart;
+}
+
 }  // namespace
+
+const char* ClientMainWindow::ProgramName(int program) const {
+  if (program >= 128) return "Drum Kit";
+  return GmProgramName(program);
+}
+
+ClientMainWindow::ClientMainWindow() : ui_(gfx_) {
+  class_ = 0;
+  handle_ = nullptr;
+  synth_player_ = nullptr;
+  midi_synth_ = nullptr;
+  midi_name_[0] = 0;
+  octave_base_ = 60;  // Z = middle C
+  program_ = 0;
+  memset(held_note_, 0, sizeof(held_note_));
+  selected_strip_ = -1;
+  view_start_ms_ = 0;
+  ms_per_px_ = 50;
+  lanes_w_ = 800;
+  hbar_grab_ = 0;
+  track_scroll_y_ = 0;
+  follow_playhead_ = true;
+  seek_dragging_ = false;
+  seek_preview_ms_ = 0;
+  inspector_scroll_ = 0;
+  inspector_content_h_ = 0;
+  output_db_ = -90;
+  limiter_db_ = 0;
+  output_hold_time_ = 0;
+  spectrum_source_ = -2;
+  last_tick_ = last_input_ = last_active_ = last_paint_ = 0;
+
+  sprintf_s(title_, "DSP MIDI Synth");
+  sprintf_s(class_name_, "%s_class", title_);
+  memset(&window_class_, 0, sizeof(window_class_));
+  window_class_.cbSize = sizeof(window_class_);
+  window_class_.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+  window_class_.lpfnWndProc = WindowProc;
+  window_class_.lpszClassName = class_name_;
+  window_class_.hCursor = LoadCursor((HINSTANCE)NULL, IDC_ARROW);
+  window_class_.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+  window_class_.hbrBackground = nullptr;  // everything is drawn by Direct2D
+}
+
+ClientMainWindow::~ClientMainWindow() {
+  Destroy();
+}
+
+void ClientMainWindow::Create() {
+  class_ = RegisterClassEx(&window_class_);
+  CreateWindowA(class_name_, title_, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800,
+                NULL, NULL, NULL, this);
+  gfx_.Create(handle_);
+  gfx_.SetDpi(float(GetDpiForWindow(handle_)));
+}
+
+void ClientMainWindow::SetInitialSize() {
+  // 1600 x 960 DIPs, or most of the work area on smaller screens.
+  const float scale = GetDpiForWindow(handle_) / 96.0f;
+  MONITORINFO mi = {sizeof(mi)};
+  GetMonitorInfo(MonitorFromWindow(handle_, MONITOR_DEFAULTTONEAREST), &mi);
+  const int work_w = mi.rcWork.right - mi.rcWork.left, work_h = mi.rcWork.bottom - mi.rcWork.top;
+  RECT rc = {0, 0, int(1600 * scale), int(960 * scale)};
+  AdjustWindowRectExForDpi(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(handle_));
+  int w = std::min<int>(rc.right - rc.left, int(work_w * 0.96));
+  int h = std::min<int>(rc.bottom - rc.top, int(work_h * 0.96));
+  SetWindowPos(handle_, nullptr, mi.rcWork.left + (work_w - w) / 2, mi.rcWork.top + (work_h - h) / 2, w, h,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void ClientMainWindow::Start() {
+  midi_synth_ = new dsp::audio::synth::MidiSynth();
+  midi_synth_->set_mode(dsp::audio::synth::MidiSynth::kModeSequencer);
+
+  // Low-latency WASAPI output; the synth runs at the device's sample rate.
+  synth_player_ = new dsp::audio::synth::RealtimePlayer();
+  if (!synth_player_->Initialize(midi_synth_)) {
+    MessageBoxA(handle_, synth_player_->last_error(), "Could not open audio device", MB_ICONERROR);
+  }
+  RescanMidiInputs();
+
+  SetInitialSize();
+  ShowWindow(handle_, SW_SHOW);
+  UpdateWindow(handle_);
+  SetTimer(handle_, 1, 33, nullptr);  // 30 Hz tick (see OnTimer)
+
+  // MIDI file from the command line; otherwise the track view offers an Open button.
+  if (__argc > 1)
+    OpenMidi(__argv[1]);
+}
+
+bool ClientMainWindow::PromptForMidiFile(char* path, size_t path_size) {
+  OPENFILENAMEA ofn = {};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = handle_;
+  ofn.lpstrFilter = "MIDI files (*.mid;*.midi)\0*.mid;*.midi\0All files (*.*)\0*.*\0";
+  ofn.lpstrFile = path;
+  ofn.nMaxFile = (DWORD)path_size;
+  ofn.lpstrTitle = "Open MIDI file";
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  return GetOpenFileNameA(&ofn) != FALSE;
+}
+
+void ClientMainWindow::PromptAndOpen() {
+  ReleaseHeldNotes();
+  ui_.in.down = false;  // the dialog swallows the button-up
+  ui_.active = 0;
+  char path[MAX_PATH] = {};
+  if (PromptForMidiFile(path, sizeof(path)))
+    OpenMidi(path);
+}
+
+void ClientMainWindow::OpenMidi(const char* path) {
+  if (synth_player_ == nullptr || !synth_player_->output().running())
+    return;
+  // Loading replaces the synth's track data, so keep the audio thread out while it happens.
+  synth_player_->WithSynthLocked([&] { midi_synth_->LoadMidiFromFile(path); });
+  const char* name = path;
+  for (const char* c = path; *c; ++c)
+    if (*c == '\\' || *c == '/') name = c + 1;
+  strncpy_s(midi_name_, name, _TRUNCATE);
+
+  // Track view rows and strip names.
+  const auto& song = midi_synth_->song();
+  visible_tracks_.clear();
+  for (auto& n : strip_names_) n.clear();
+  for (int t = 0; t < int(song.tracks.size()); ++t) {
+    const auto& track = song.tracks[t];
+    if (track.notes.empty()) continue;
+    visible_tracks_.push_back(t);
+    for (int ch = 0; ch < 16; ++ch) {
+      if (!(track.channel_mask & (1 << ch)) || !strip_names_[ch].empty()) continue;
+      bool has_notes = false;
+      for (auto& n : track.notes) if (n.channel == ch) { has_notes = true; break; }
+      if (has_notes) strip_names_[ch] = track.name.empty() ? std::string("Track ") + std::to_string(t + 1) : track.name;
+    }
+  }
+  track_scroll_y_ = 0;
+  ZoomToFit();
+  char title[MAX_PATH + 64];
+  sprintf_s(title, "%s - %s", title_, midi_name_);
+  SetWindowTextA(handle_, title);
+  synth_player_->Play();
+}
+
+void ClientMainWindow::RescanMidiInputs() {
+  if (synth_player_ == nullptr)
+    return;
+  ReleaseHeldNotes();
+  // Ports are opened/closed while the audio thread is kept out of the synth.
+  synth_player_->WithSynthLocked([&] {
+    midi_input_.OpenAll();
+    synth_player_->set_midi_input(&midi_input_);
+  });
+}
+
+void ClientMainWindow::SendLive(uint8_t status, uint8_t data1, uint8_t data2) {
+  if (synth_player_ != nullptr)
+    synth_player_->PostMidiMessage(status, data1, data2);
+}
+
+void ClientMainWindow::ReleaseHeldNotes() {
+  SendLive(0xB0, 64, 0);  // sustain pedal up as well
+  for (int vk = 0; vk < 256; ++vk) {
+    if (held_note_[vk]) {
+      SendLive(0x80, uint8_t(held_note_[vk] - 1), 64);
+      held_note_[vk] = 0;
+    }
+  }
+}
+
+void ClientMainWindow::Seek(double ms) {
+  if (synth_player_ == nullptr || !midi_synth_->song().loaded)
+    return;
+  synth_player_->Seek(std::max(0.0, ms) / 1000.0);
+}
+
+double ClientMainWindow::PlayheadMs() const {
+  if (seek_dragging_) return seek_preview_ms_;
+  return synth_player_ ? synth_player_->GetPlaybackSeconds() * 1000.0 : 0.0;
+}
+
+void ClientMainWindow::ZoomToFit() {
+  const double length = midi_synth_ ? midi_synth_->song().length_ms : 0;
+  ms_per_px_ = length > 0 ? length / std::max(200.0f, lanes_w_ - 24) : 50.0;
+  view_start_ms_ = 0;
+}
+
+const char* ClientMainWindow::StripName(int channel) const {
+  return strip_names_[channel].c_str();
+}
 
 void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
   if (synth_player_ == nullptr)
@@ -227,18 +303,15 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
   const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
   if (ctrl) {
-    if (key == 'O' && !repeat) {
-      ReleaseHeldNotes();
-      char path[MAX_PATH] = {};
-      if (PromptForMidiFile(path, sizeof(path)))
-        OpenMidi(path);
-    }
+    if (key == 'O' && !repeat) PromptAndOpen();
   } else if (key == VK_SHIFT) {
     if (!repeat) SendLive(0xB0, 64, 127);  // sustain pedal down
   } else if (key == VK_SPACE) {
     if (!repeat) synth_player_->TogglePause();
   } else if (key == VK_ESCAPE) {
     synth_player_->Stop();
+  } else if (key == VK_HOME) {
+    Seek(0);
   } else if (key == VK_F5) {
     if (!repeat) RescanMidiInputs();
   } else if (key == VK_UP || key == VK_DOWN) {
@@ -259,7 +332,7 @@ void ClientMainWindow::OnKeyDown(WPARAM key, LPARAM flags) {
       }
     }
   }
-  UpdateTitle();
+  last_input_ = NowSeconds();
   InvalidateRect(handle_, nullptr, FALSE);
 }
 
@@ -274,93 +347,160 @@ void ClientMainWindow::OnKeyUp(WPARAM key) {
   }
 }
 
-void ClientMainWindow::OnTimer() {
-  if (synth_player_ != nullptr) {
-    float peak = synth_player_->TakePeakLevel();
-    level_db_ = peak > 0.000001f ? 20.0f * log10f(peak) : -120.0f;
-    limiter_db_ = 20.0f * log10f(synth_player_->TakeLimiterGain());
+void ClientMainWindow::OnMouse(UINT msg, WPARAM wparam, LPARAM lparam) {
+  Input& in = ui_.in;
+  const float scale = gfx_.scale();
+  POINT pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  if (msg == WM_MOUSEWHEEL) ScreenToClient(handle_, &pt);
+  if (msg != WM_MOUSELEAVE) {
+    in.mx = pt.x / scale;
+    in.my = pt.y / scale;
   }
-  UpdateTitle();
+  in.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  in.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  switch (msg) {
+    case WM_MOUSEMOVE: {
+      TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, handle_, 0};
+      TrackMouseEvent(&tme);
+      break;
+    }
+    case WM_MOUSELEAVE:
+      if (!in.down) in.mx = in.my = -1000;
+      break;
+    case WM_LBUTTONDBLCLK:
+      in.dbl = true;
+      [[fallthrough]];
+    case WM_LBUTTONDOWN:
+      in.down = true;
+      in.pressed = true;
+      SetCapture(handle_);
+      SetFocus(handle_);
+      break;
+    case WM_LBUTTONUP:
+      in.down = false;
+      in.released = true;
+      ReleaseCapture();
+      break;
+    case WM_RBUTTONDOWN:
+      in.rpressed = true;
+      break;
+    case WM_MOUSEWHEEL:
+      in.wheel += GET_WHEEL_DELTA_WPARAM(wparam) / float(WHEEL_DELTA);
+      break;
+  }
+  last_input_ = NowSeconds();
   InvalidateRect(handle_, nullptr, FALSE);
 }
 
-void ClientMainWindow::UpdateTitle() {
-  char text[MAX_PATH * 2];
-  if (synth_player_ == nullptr || !synth_player_->output().running()) {
-    bool lost = synth_player_ != nullptr && synth_player_->output().device_lost();
-    sprintf_s(text, "%s - %s", title_, lost ? "audio device lost" : "no audio device");
-  } else {
-    static const char* state_names[] = {"Stopped", "Playing", "Paused"};
-    int pos = (int)synth_player_->GetPlaybackSeconds();
-    int len = (int)(synth_player_->song_length_ms / 1000.0);
-    sprintf_s(text, "%s - %s [%s %d:%02d / %d:%02d] level %.0f dB limiter %.1f dB", title_,
-              midi_name_[0] ? midi_name_ : "(no file)", state_names[synth_player_->state()],
-              pos / 60, pos % 60, len / 60, len % 60, level_db_, limiter_db_);
+void ClientMainWindow::LevelMeter::Update(float peak_l, float peak_r, float gr_gain, float dt) {
+  const float peaks[2] = {peak_l, peak_r};
+  for (int c = 0; c < 2; ++c) {
+    const float d = peaks[c] > 1e-5f ? 20.0f * log10f(peaks[c]) : -90.0f;
+    db[c] = std::max(d, db[c] - 28.0f * dt);  // fall 28 dB/s
+    if (d >= hold[c]) {
+      hold[c] = d;
+      hold_time[c] = 1.2f;
+    } else if ((hold_time[c] -= dt) <= 0) {
+      hold[c] = std::max(db[c], hold[c] - 20.0f * dt);
+    }
   }
-  SetWindowTextA(handle_, text);
+  const float g = gr_gain < 1.0f ? 20.0f * log10f(std::max(gr_gain, 1e-4f)) : 0.0f;
+  gr_db = std::min(g, gr_db + 18.0f * dt);  // recover 18 dB/s on the display
 }
 
-void ClientMainWindow::Paint() {
-  PAINTSTRUCT ps;
-  HDC dc = BeginPaint(handle_, &ps);
-  RECT client;
-  GetClientRect(handle_, &client);
-  FillRect(dc, &client, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-  HGDIOBJ old_font = SelectObject(dc, font_ ? font_ : GetStockObject(ANSI_FIXED_FONT));
-  SetBkMode(dc, TRANSPARENT);
+void ClientMainWindow::UpdateMeters(float dt) {
+  if (synth_player_ == nullptr || midi_synth_ == nullptr) return;
+  auto& mixer = midi_synth_->mixer;
+  for (int i = 0; i < 16; ++i) {
+    float l, r;
+    mixer.TakeStripPeak(i, l, r);
+    strip_meter_[i].Update(l, r, mixer.TakeStripGainReduction(i), dt);
+  }
+  float l, r;
+  mixer.TakeMasterPeak(l, r);
+  master_meter_.Update(l, r, mixer.TakeMasterGainReduction(), dt);
 
-  char lines[12][256] = {};
-  int n = 0;
-  if (synth_player_ != nullptr && synth_player_->output().running()) {
-    static const char* state_names[] = {"Stopped", "Playing", "Paused"};
-    auto& out = synth_player_->output();
-    int pos = (int)synth_player_->GetPlaybackSeconds();
-    int len = (int)(synth_player_->song_length_ms / 1000.0);
-    sprintf_s(lines[n++], "File    %s   %s %d:%02d / %d:%02d", midi_name_[0] ? midi_name_ : "(none)",
-              state_names[synth_player_->state()], pos / 60, pos % 60, len / 60, len % 60);
-    char level[32];
-    if (level_db_ <= -100.0f) strcpy_s(level, "-inf"); else sprintf_s(level, "%.1f", level_db_);
-    sprintf_s(lines[n++], "Audio   WASAPI %u Hz, %.2f ms period (%s)", out.sample_rate(), out.period_ms(),
-              out.low_latency_mode() ? "low-latency" : "default period");
-    sprintf_s(lines[n++], "Output  level %s dB   limiter %.1f dB", level, limiter_db_);
-  } else {
-    sprintf_s(lines[n++], "Audio   no audio device");
-  }
-  if (midi_input_.open_count() == 0) {
-    sprintf_s(lines[n++], "MIDI in none open (%d port(s) found) - connect a keyboard and press F5",
-              midi_input_.available_count());
-  } else {
-    int len = sprintf_s(lines[n], "MIDI in %d of %d:", midi_input_.open_count(), midi_input_.available_count());
-    for (int i = 0; i < midi_input_.open_count() && len < 200; ++i)
-      len += sprintf_s(lines[n] + len, sizeof(lines[n]) - len, " [%s]", midi_input_.port_name(i));
-    ++n;
-  }
-  {
-    const auto& cal = midi_synth_ ? midi_synth_->calibrated_instruments() : std::vector<std::string>();
-    int len = sprintf_s(lines[n], "Models  %s", cal.empty() ? "no calibration data found (data\\calibration)" : "calibrated from recordings:");
-    for (size_t i = 0; i < cal.size() && len < 200; ++i)
-      len += sprintf_s(lines[n] + len, sizeof(lines[n]) - len, " %s", cal[i].c_str());
-    ++n;
-  }
-  sprintf_s(lines[n++], "PC keys Z = %s%d, program %d %s (channel 1)", NoteName(octave_base_), octave_base_ / 12 - 1,
-            program_ + 1, GmProgramName(program_));
-  const int status_lines = n++;  // bright status lines, then a gap, then dimmer help
-  sprintf_s(lines[n++], "Space play/pause file   Esc stop   Ctrl+O open file   F5 rescan MIDI ports");
-  sprintf_s(lines[n++], "Z S X D C V G B H N J M ,   and   Q 2 W 3 E R 5 T 6 Y 7 U I   play notes");
-  sprintf_s(lines[n++], "Up/Down octave   Left/Right program   Shift sustain pedal");
+  const float peak = synth_player_->TakePeakLevel();
+  const float d = peak > 1e-5f ? 20.0f * log10f(peak) : -90.0f;
+  output_db_ = std::max(d, output_db_ - 28.0f * dt);
+  const float lim = 20.0f * log10f(std::max(synth_player_->TakeLimiterGain(), 1e-4f));
+  limiter_db_ = std::min(lim, limiter_db_ + 18.0f * dt);
+}
 
-  int y = 12;
-  for (int i = 0; i < n; ++i) {
-    SetTextColor(dc, i < status_lines ? RGB(230, 230, 230) : RGB(150, 150, 150));
-    TextOutA(dc, 14, y, lines[i], (int)strlen(lines[i]));
-    y += 22;
+void ClientMainWindow::UpdateSpectrum() {
+  auto& mixer = midi_synth_->mixer;
+  mixer.set_analyzer_source(selected_strip_);
+  const int bins = kFftSize / 2 + 1;
+  if (spectrum_source_ != selected_strip_ || int(spectrum_db_.size()) != bins) {
+    spectrum_db_.assign(bins, -120.0f);
+    spectrum_source_ = selected_strip_;
   }
-  SelectObject(dc, old_font);
-  EndPaint(handle_, &ps);
+  static float re[kFftSize], im[kFftSize];
+  mixer.ReadScope(re, kFftSize);
+  float window_sum = 0;
+  for (int i = 0; i < kFftSize; ++i) {
+    const float w = 0.5f - 0.5f * cosf(6.2831853f * i / (kFftSize - 1));
+    re[i] *= w;
+    im[i] = 0;
+    window_sum += w;
+  }
+  Fft(re, im, kFftSize);
+  const float norm = 2.0f / window_sum;
+  for (int b = 0; b < bins; ++b) {
+    const float mag = sqrtf(re[b] * re[b] + im[b] * im[b]) * norm;
+    const float db = mag > 1e-7f ? 20.0f * log10f(mag) : -140.0f;
+    float& s = spectrum_db_[b];
+    s = db > s ? s + (db - s) * 0.6f : s + (db - s) * 0.12f;  // fast rise, slow fall
+  }
+}
+
+
+// 30 Hz tick: meters always advance; the window is only redrawn while something on it moves
+// (playback, meters/analyser decaying, recent input) and about once a second otherwise.
+// Drawing the whole studio costs several ms, so this keeps an idle window nearly free.
+void ClientMainWindow::OnTimer() {
+  const double now = NowSeconds();
+  const float dt = last_tick_ > 0 ? float(std::min(0.1, now - last_tick_)) : 0.033f;
+  last_tick_ = now;
+  UpdateMeters(dt);
+  bool active = seek_dragging_ || ui_.in.down || now - last_input_ < 1.0 || output_db_ > -89.0f ||
+                limiter_db_ < -0.05f || master_meter_.hold[0] > -89.0f || master_meter_.hold[1] > -89.0f ||
+                (synth_player_ && synth_player_->state() == dsp::audio::synth::RealtimePlayer::kStatePlaying);
+  for (auto& m : strip_meter_)
+    active = active || m.hold[0] > -89.0f || m.hold[1] > -89.0f || m.gr_db < -0.05f;
+  if (active) last_active_ = now;
+  // keep drawing a little after activity so the analyser and peak holds settle
+  if (now - last_active_ < 2.0 || now - last_paint_ > 1.0)
+    InvalidateRect(handle_, nullptr, FALSE);
+}
+
+void ClientMainWindow::Render() {
+  if (IsIconic(handle_) || !gfx_.BeginFrame()) return;
+  last_paint_ = NowSeconds();
+  if (midi_synth_ != nullptr && synth_player_ != nullptr && synth_player_->output().running())
+    UpdateSpectrum();
+  ui_.BeginFrame();
+
+  const float W = gfx_.width(), H = gfx_.height();
+  gfx_.Fill(Rect(0, 0, W, H), theme::kBg);
+  const float top_h = 56, status_h = 26;
+  const float ins_w = W >= 1440 ? 480.0f : 440.0f;
+  const float body_y = top_h, body_h = H - top_h - status_h;
+  const float left_w = W - ins_w;
+  const float mixer_h = std::clamp(body_h * 0.42f, 290.0f, 380.0f);
+
+  if (synth_player_ != nullptr && midi_synth_ != nullptr) {
+    DrawTopBar(Rect(0, 0, W, top_h));
+    DrawTrackView(Rect(0, body_y, left_w, body_h - mixer_h));
+    DrawMixer(Rect(0, body_y + body_h - mixer_h, left_w, mixer_h));
+    DrawInspector(Rect(left_w, body_y, ins_w, body_h));
+    DrawStatusBar(Rect(0, H - status_h, W, status_h));
+  }
+  ui_.EndFrame();
+  gfx_.EndFrame();
 }
 
 void ClientMainWindow::Destroy() {
-  //gl.Deinitialize(handle_);
   if (synth_player_ != nullptr) {
     KillTimer(handle_, 1);
     delete synth_player_;  // stops the audio thread before the synth goes away
@@ -371,137 +511,82 @@ void ClientMainWindow::Destroy() {
     midi_synth_ = nullptr;
   }
   midi_input_.CloseAll();  // audio thread is gone, nothing drains the ports any more
-  if (font_ != nullptr) {
-    DeleteObject(font_);
-    font_ = nullptr;
-  }
-  if (class_!=0) {
-    UnregisterClass(class_name_,0);
+  gfx_.Destroy();
+  if (class_ != 0) {
+    UnregisterClass(class_name_, 0);
     class_ = 0;
   }
-  //ChangeDisplaySettings(0,0);
 }
 
-
-
-void ClientMainWindow::SetClientSize(int width,int height) {
-  RECT rectangle;
-  SetRect(&rectangle,0,0,width,height);
-  AdjustWindowRectEx(&rectangle,display[dispmode].style,0,0);
-  int actual_width  = static_cast<int>(rectangle.right  - rectangle.left);
-  int actual_height = static_cast<int>(rectangle.bottom - rectangle.top);
-  SetWindowPos(handle_,0,0,0,actual_width,actual_height,SWP_NOACTIVATE|SWP_NOMOVE);  
-}
-
-void ClientMainWindow::Center() {
-  RECT rectangle;
-  GetWindowRect(handle_,&rectangle);
-  
-  int screen_width  = GetSystemMetrics(SM_CXSCREEN);
-  int screen_height = GetSystemMetrics(SM_CYSCREEN);
-  
-  int left   = (screen_width - rectangle.right)/2;
-  int top    = (screen_height - rectangle.bottom)/2;
-  
-  SetWindowPos(handle_,0,left,top,0,0,SWP_NOACTIVATE|SWP_NOSIZE);  
-  
-}
-
-void ClientMainWindow::Show() {
-  ShowWindow(handle_, SW_SHOW); 
-  UpdateWindow(handle_); 
-}
-
-void ClientMainWindow::Hide() {
-  ShowWindow(handle_, SW_HIDE); 
-}
-
-void ClientMainWindow::Fullscreen() {
-  return;
-  dispmode = 1;
-  display[dispmode].mode.dmPelsWidth = 1024;
-  display[dispmode].mode.dmPelsHeight = 768;
-
-  SetWindowPos(handle_,0,0,0,0,0,SWP_NOACTIVATE|SWP_NOSIZE); 
-  SetWindowLongPtr(handle_,GWL_STYLE,display[dispmode].style);
-  SetClientSize(display[dispmode].mode.dmPelsWidth,display[dispmode].mode.dmPelsHeight);
-
-  auto r = ChangeDisplaySettings(&display[dispmode].mode,CDS_FULLSCREEN);
-  ShowCursor(0);
-  
-    //HDC hDC = GetDC(CreateWindow("edit",0,WS_POPUP | WS_VISIBLE | WS_MAXIMIZE, 0, 0, 0, 0, 0, 0, 0, 0));
-  //wglMakeCurrent(hDC, wglCreateContext(hDC));
-  //HDC hDC = GetDC(CreateWindow("edit",0,WS_POPUP | WS_VISIBLE | WS_MAXIMIZE, 0, 0, 0, 0, 0, 0, 0, 0));
-  //SetPixelFormat(hDC, ChoosePixelFormat(hDC, &pfd) , &pfd);
-  //wglMakeCurrent(hDC, wglCreateContext(hDC));
-  //
-}
-
-void ClientMainWindow::Windowed() {
-  dispmode = 0;
-  display[dispmode].mode.dmPelsWidth = 640;
-  display[dispmode].mode.dmPelsHeight = 480;
-
-  //ChangeDisplaySettings(0,0);
-  ShowCursor(1);
-
-  SetWindowLongPtr(handle_,GWL_STYLE,display[dispmode].style);
-  SetClientSize(display[dispmode].mode.dmPelsWidth,display[dispmode].mode.dmPelsHeight);
-  Center();
-
-
-}
-
-void ClientMainWindow::Step() {
-  //gl.BeginScene(1,1,0,1);
-
-  //gl.EndScene();
-}
-
-LRESULT CALLBACK ClientMainWindow::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-  static ClientMainWindow* win = nullptr;
- 
-  switch( uMsg ) {
-    case WM_NCCREATE: {
-      CREATESTRUCT* create_struct = reinterpret_cast<CREATESTRUCT*>(lParam);
-      win = reinterpret_cast<ClientMainWindow*>(create_struct->lpCreateParams);
-      win->handle_ = hwnd;
-      SetWindowLongPtr(hwnd,GWLP_USERDATA,(ULONG_PTR)(win));
-      return TRUE;
-    }  
+LRESULT CALLBACK ClientMainWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto create_struct = reinterpret_cast<CREATESTRUCT*>(lparam);
+    auto win = reinterpret_cast<ClientMainWindow*>(create_struct->lpCreateParams);
+    win->handle_ = hwnd;
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)win);
+    return DefWindowProc(hwnd, msg, wparam, lparam);
   }
-  
-  //ClientMainWindow* current_window = reinterpret_cast<ClientMainWindow*>(static_cast<LONG_PTR>(GetWindowLongPtr(hwnd,GWLP_USERDATA)));
-  
+  auto win = reinterpret_cast<ClientMainWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
   if (win != nullptr) {
-    switch( uMsg ) {
+    switch (msg) {
       case WM_KEYDOWN:
-        win->OnKeyDown(wParam, lParam);
+        win->OnKeyDown(wparam, lparam);
         return 0;
       case WM_KEYUP:
-        win->OnKeyUp(wParam);
+        win->OnKeyUp(wparam);
         return 0;
+      case WM_SYSKEYDOWN:
+        if (wparam == VK_F10) return 0;
+        break;
       case WM_KILLFOCUS:
         win->ReleaseHeldNotes();  // key-ups go elsewhere once we lose focus
+        return 0;
+      case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+      case WM_RBUTTONDOWN: case WM_MOUSEWHEEL: case WM_MOUSELEAVE:
+        win->OnMouse(msg, wparam, lparam);
+        return 0;
+      case WM_CAPTURECHANGED:
+        if ((HWND)lparam != hwnd && win->ui_.in.down) {
+          win->ui_.in.down = false;
+          win->ui_.in.released = true;
+        }
         return 0;
       case WM_TIMER:
         win->OnTimer();
         return 0;
       case WM_PAINT:
-        win->Paint();
+        win->Render();
+        ValidateRect(hwnd, nullptr);
         return 0;
       case WM_ERASEBKGND:
-        return 1;  // Paint() fills the background
+        return 1;  // Render() fills the background
+      case WM_SIZE:
+        win->gfx_.Resize();
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      case WM_DPICHANGED: {
+        const RECT* r = reinterpret_cast<RECT*>(lparam);
+        win->gfx_.SetDpi(float(HIWORD(wparam)));
+        SetWindowPos(hwnd, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+      }
+      case WM_GETMINMAXINFO: {
+        const float scale = GetDpiForWindow(hwnd) / 96.0f;
+        auto info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize.x = LONG(1180 * scale);
+        info->ptMinTrackSize.y = LONG(720 * scale);
+        return 0;
+      }
       case WM_SYSCOMMAND:
-        if (wParam == SC_SCREENSAVE || wParam == SC_MONITORPOWER)
+        if (wparam == SC_SCREENSAVE || wparam == SC_MONITORPOWER)
           return 0;
-      break;
+        break;
       case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
     }
   }
-  return DefWindowProc(hwnd,uMsg,wParam,lParam);
+  return DefWindowProc(hwnd, msg, wparam, lparam);
 }
 
 }

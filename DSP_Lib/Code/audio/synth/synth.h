@@ -59,6 +59,8 @@ class Synth : public Component {
   virtual void HandleMidiMessage(uint8_t status, uint8_t data1, uint8_t data2) {}
   // Release every sounding note on every channel.
   virtual void AllNotesOff() {}
+  // Move file playback to a position (ms). Only call with the audio thread kept out.
+  virtual void Seek(double ms) {}
  protected:
 };
 
