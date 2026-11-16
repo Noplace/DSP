@@ -196,9 +196,12 @@ class ClientMainWindow {
   // on-screen keyboard and mixer view options
   void DrawKeyboard(const Rect& r);
   int kb_note_ = -1;           // key held with the mouse
-  bool mixer_used_only_ = false;
+  bool mixer_used_only_ = true;    // only the channels the song uses (or that play / are selected)
   bool mixer_wide_ = false;
-  bool drum_strips_open_ = false;  // mixer shows channel 10's drum kit group strips
+  bool drum_strips_open_ = false;  // mixer shows channel 10's drum kit group strips
+  bool scroll_to_kit_ = false;     // scroll the mixer to the drum groups on the next frame
+  float mixer_scroll_ = 0;         // horizontal scroll of the channel strips, px
+  float mixer_bar_grab_ = 0;
   bool StripUsed(int ch) const;
 
   // metering / convolution

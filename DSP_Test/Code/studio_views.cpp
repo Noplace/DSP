@@ -732,22 +732,63 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
   if (ui_.Button(Id(this, 42), reset_r, "Reset all", false, theme::kAccent, 10.5f)) mixer.ResetAll();
   if (ui_.Hover(reset_r)) ui_.Tooltip("Every strip and the master back to defaults", reset_r.cx(), reset_r.y);
 
-  const float y0 = area.y + 28, h = area.h - 28 - 8;
+  const float y0 = area.y + 28, full_h = area.h - 28 - 8;
   const float master_w = 96;
-  const float avail = area.w - master_w - 28;
-  int shown[Mixer::kAllStrips], count = 0;
+  // The channel strips scroll sideways inside their own area; the master stays put on the right.
+  const Rect strips_area(area.x + 10, y0, area.w - master_w - 28, full_h);
+  int shown[Mixer::kAllStrips], count = 0, kit_at = -1;
   const bool kit_on_10 = midi_synth_->channel_program(Mixer::kKitBus) >= 128;
+  const bool kit_open = kit_on_10 && drum_strips_open_;
   for (int ch = 0; ch < 16; ++ch) {
-    if (!mixer_used_only_ || StripUsed(ch) || (ch == Mixer::kKitBus && drum_strips_open_)) shown[count++] = ch;
-    if (ch == Mixer::kKitBus && kit_on_10 && drum_strips_open_)  // the drum bus's group strips beside it
+    if (!mixer_used_only_ || StripUsed(ch) || (ch == Mixer::kKitBus && kit_open)) shown[count++] = ch;
+    if (ch == Mixer::kKitBus && kit_open) {  // the drum bus's group strips beside it
+      kit_at = count;
       for (int s = Mixer::kKitFirst; s < Mixer::kAllStrips; ++s) shown[count++] = s;
+    }
   }
-  const float sw = count ? std::clamp(avail / count, 40.0f, mixer_wide_ ? 130.0f : 84.0f) : 84.0f;
-  for (int i = 0; i < count; ++i)
-    DrawStrip(Rect(area.x + 10 + i * sw, y0, sw - 4, h), shown[i]);
+  // Strips never get narrower than their controls need; what doesn't fit scrolls.
+  const float min_w = mixer_wide_ ? 110.0f : 72.0f, max_w = mixer_wide_ ? 130.0f : 84.0f;
+  const float sw = count ? std::clamp(strips_area.w / count, min_w, max_w) : max_w;
+  const float content_w = count * sw;
+  const bool scrolls = content_w > strips_area.w + 0.5f;
+  const float bar_h = 10;
+  const float h = scrolls ? full_h - bar_h - 4 : full_h;
+  const float max_scroll = std::max(0.0f, content_w - strips_area.w);
+  if (scroll_to_kit_ && kit_at >= 0) {  // just opened: bring the bus and its groups into view
+    const float a = (kit_at - 1) * sw, b = (kit_at + Mixer::kKitStrips) * sw;
+    if (a < mixer_scroll_) mixer_scroll_ = a;
+    else if (b > mixer_scroll_ + strips_area.w) mixer_scroll_ = std::min(a, b - strips_area.w);
+  }
+  scroll_to_kit_ = false;
+  mixer_scroll_ = std::clamp(mixer_scroll_, 0.0f, max_scroll);
+
+  ui_.Clip(strips_area);  // drawing and clicks stay inside the strips area
+  for (int i = 0; i < count; ++i) {
+    const float x = strips_area.x + i * sw - mixer_scroll_;
+    if (x + sw < strips_area.x || x > strips_area.r()) continue;
+    DrawStrip(Rect(x, y0, sw - 4, h), shown[i]);
+  }
+  // The wheel scrolls the strips unless a knob or fader under the cursor took it.
+  const float wheel = scrolls ? ui_.TakeWheel(Rect(strips_area.x, y0, strips_area.w, h)) : 0.0f;
+  ui_.Unclip();
+  if (wheel != 0) mixer_scroll_ = std::clamp(mixer_scroll_ - wheel * sw, 0.0f, max_scroll);
+  if (scrolls) {
+    const Rect bar(strips_area.x, strips_area.b() - bar_h, strips_area.w, bar_h);
+    g.FillRound(bar, 3, Rgb(0x14161b));
+    const float thumb_w = std::max(30.0f, bar.w * strips_area.w / content_w);
+    const float thumb_x = bar.x + (bar.w - thumb_w) * (max_scroll > 0 ? mixer_scroll_ / max_scroll : 0.0f);
+    const Rect thumb(thumb_x, bar.y + 2, thumb_w, bar.h - 4);
+    const WidgetId bar_id = Id(this, 46);
+    if (ui_.Press(bar_id, bar)) mixer_bar_grab_ = thumb.Contains(ui_.in.mx, ui_.in.my) ? ui_.in.mx - thumb_x : thumb_w * 0.5f;
+    if (ui_.Dragging(bar_id)) {
+      const float t = std::clamp((ui_.in.mx - mixer_bar_grab_ - bar.x) / std::max(1.0f, bar.w - thumb_w), 0.0f, 1.0f);
+      mixer_scroll_ = t * max_scroll;
+    }
+    g.FillRound(thumb, 3, ui_.active == bar_id || ui_.Hover(bar) ? theme::kFaint : theme::kPanel3);
+  }
   if (count == 0)
-    g.Text("no channels in use yet", Rect(area.x + 10, y0, avail, 40), theme::kFaint, 12);
-  DrawMasterStrip(Rect(area.r() - master_w - 10, y0, master_w, h));
+    g.Text("no channels in use yet", Rect(strips_area.x, y0, strips_area.w, 40), theme::kFaint, 12);
+  DrawMasterStrip(Rect(area.r() - master_w - 10, y0, master_w, full_h));
 }
 
 void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
@@ -772,7 +813,7 @@ void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
   if (drum_bus) {  // open / close the kit's group strips (kick, snare, toms...)
     const Rect tr(chip.r() - 21, chip.y + 2, 19, chip.h - 4);
     if (ui_.Button(Id(this, 45), tr, drum_strips_open_ ? "\xE2\x97\x82" : "\xE2\x96\xB8", drum_strips_open_, theme::kText, 10))
-      drum_strips_open_ = !drum_strips_open_;
+      scroll_to_kit_ = drum_strips_open_ = !drum_strips_open_;
     if (ui_.Hover(tr))
       ui_.Tooltip(drum_strips_open_ ? "Hide the drum kit's group strips"
                                     : "Show the drum kit's group strips: kick, snare, toms, hi-hat, cymbals, ride, percussion, FX",

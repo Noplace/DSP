@@ -185,6 +185,13 @@ void ClientMainWindow::OpenMidi(const char* path, bool autoplay) {
   editor_track_ = -1;
   RefreshTrackLists();
   track_scroll_y_ = 0;
+  // The mixer follows the new file: a selected channel it doesn't use goes back to the master,
+  // and the strips scroll back to the start.
+  if (selected_strip_ >= 0 && selected_strip_ < 16 && strip_names_[selected_strip_].empty() &&
+      midi_synth_->channel_override(selected_strip_) < 0)
+    selected_strip_ = -1;
+  if (Mixer::IsKitStrip(selected_strip_) && strip_names_[Mixer::kKitBus].empty()) selected_strip_ = -1;
+  mixer_scroll_ = 0;
   ZoomToFit();
   char title[MAX_PATH + 64];
   sprintf_s(title, "%s - %s", title_, midi_name_);
