@@ -792,6 +792,174 @@ int CmdDrumCompare(int argc, char** argv) {
   return 0;
 }
 
+// ---- Fitting kit parameters to recordings ----------------------------------------------------
+
+std::vector<float> RenderKitNote(synth::instruments::DrumKit& kit, int note, int velocity, size_t frames) {
+  kit.Silence();
+  uint32_t generation;
+  const int v = kit.AllocateVoice(generation);
+  kit.StartVoice(v, note, 440, velocity / 127.0f);
+  kit.ReleaseVoice(v);
+  std::vector<float> out(frames);
+  for (float& s : out) s = kit.Tick(v);
+  return out;
+}
+
+struct FitTarget {
+  std::string path;
+  int velocity;
+  std::vector<float> mono;
+  DrumProfile profile;
+};
+
+// Distance between two drum profiles: band energies over time (each relative to its own
+// loudest cell), decay times and, for pitched membranes, the pitch and its glide.
+double ProfileError(const DrumProfile& r, const DrumProfile& s, bool pitched) {
+  double e = 0;
+  const double window_weight[kDrumWindows] = {1.0, 1.0, 1.0, 0.8, 0.5};
+  for (int w = 0; w < kDrumWindows; ++w)
+    for (int b = 0; b < kDrumBands; ++b)
+      e += window_weight[w] * fabs(std::max(-60.0, r.band_db[w][b]) - std::max(-60.0, s.band_db[w][b]));
+  e /= kDrumWindows * kDrumBands;
+  auto log_ratio = [](double a, double b) { return a > 0 && b > 0 ? fabs(log2(a / b)) : 1.0; };
+  e += 6 * log_ratio(r.t20, s.t20);
+  if (r.t40 > 0) e += 4 * log_ratio(r.t40, s.t40);
+  if (pitched) {
+    e += 24 * log_ratio(r.low_hz[0], s.low_hz[0]);
+    if (r.low_hz[2] > 0 && s.low_hz[2] > 0) e += 24 * log_ratio(r.low_hz[0] / r.low_hz[2], s.low_hz[0] / s.low_hz[2]);
+  }
+  return e;
+}
+
+// drumfit <cal file> <note> <param,param,...> <recording.wav>@<velocity> ... [-rounds N]
+// Coordinate descent (log steps) on the named parameters of the note's articulation / piece so
+// that its profile matches the recordings; writes the fitted values into the calibration file
+// (other lines are kept, so notes can be fitted one after another).
+int CmdDrumFit(int argc, char** argv) {
+  if (argc < 6) return 2;
+  const char* cal_path = argv[2];
+  const int note = atoi(argv[3]);
+  std::vector<std::string> params;
+  for (char* p = argv[4]; *p;) {
+    char* comma = strchr(p, ',');
+    params.push_back(comma ? std::string(p, comma) : std::string(p));
+    if (!comma) break;
+    p = comma + 1;
+  }
+  int rounds = 8;
+  bool use_pitch = true;  // -nopitch: recordings whose low end is too noisy for a pitch estimate
+  std::vector<FitTarget> targets;
+  for (int i = 5; i < argc; ++i) {
+    if (!strcmp(argv[i], "-rounds") && i + 1 < argc) { rounds = atoi(argv[++i]); continue; }
+    if (!strcmp(argv[i], "-nopitch")) { use_pitch = false; continue; }
+    std::string arg = argv[i];
+    size_t at = arg.rfind('@');
+    FitTarget t;
+    t.path = arg.substr(0, at);
+    t.velocity = at == std::string::npos ? 100 : atoi(arg.c_str() + at + 1);
+    analysis::Audio audio;
+    std::string error;
+    if (!analysis::ReadWav(t.path.c_str(), audio, &error)) { fprintf(stderr, "%s: %s\n", t.path.c_str(), error.c_str()); return 1; }
+    // Start just before the hit and keep at most 1.5 s.
+    float peak = 0;
+    for (float v : audio.mono) peak = std::max(peak, fabsf(v));
+    size_t onset = 0;
+    while (onset < audio.mono.size() && fabsf(audio.mono[onset]) < 0.05f * peak) ++onset;
+    onset = onset > audio.rate / 200 ? onset - audio.rate / 200 : 0;
+    const size_t len = std::min(audio.mono.size() - onset, size_t(1.5 * audio.rate));
+    t.mono.assign(audio.mono.begin() + onset, audio.mono.begin() + onset + len);
+    t.profile = ProfileDrum(t.mono, audio.rate);
+    targets.push_back(std::move(t));
+  }
+  if (targets.empty()) return 2;
+  analysis::Audio first;
+  analysis::ReadWav(targets[0].path.c_str(), first);
+  const uint32_t rate = first.rate;
+
+  synth::instruments::DrumKit kit;
+  kit.set_sample_rate(rate);
+  kit.Prepare();
+  kit.LoadCalibration(cal_path);  // start from what is already fitted
+  float f01 = 0;
+  const bool pitched = use_pitch && kit.GetParam(note, "f01", &f01) && f01 > 0;
+  std::vector<float> value(params.size());
+  for (size_t i = 0; i < params.size(); ++i)
+    if (!kit.GetParam(note, params[i].c_str(), &value[i])) { fprintf(stderr, "unknown parameter %s\n", params[i].c_str()); return 1; }
+
+  auto evaluate = [&]() {
+    double e = 0;
+    for (const FitTarget& t : targets) {
+      auto syn = RenderKitNote(kit, note, t.velocity, t.mono.size());
+      e += ProfileError(t.profile, ProfileDrum(syn, rate), pitched);
+    }
+    return e / targets.size();
+  };
+  auto print = [&](const char* label, double e) {
+    printf("%-8s error %6.2f :", label, e);
+    for (size_t i = 0; i < params.size(); ++i) printf(" %s=%.4g", params[i].c_str(), value[i]);
+    printf("\n");
+  };
+  double best = evaluate();
+  print("start", best);
+  double step = 1.0;  // log2 units: first tries halve / double, then finer
+  for (int round = 0; round < rounds; ++round) {
+    bool improved = false;
+    for (size_t i = 0; i < params.size(); ++i) {
+      for (int dir = -1; dir <= 1; dir += 2) {
+        const float old = value[i];
+        float trial = old * float(pow(2.0, dir * step));
+        if (old == 0) trial = dir > 0 ? 0.01f : 0.0f;
+        kit.SetParam(note, params[i].c_str(), trial);
+        double e = evaluate();
+        if (e < best - 1e-4) {
+          best = e;
+          value[i] = trial;
+          improved = true;
+          break;
+        }
+        kit.SetParam(note, params[i].c_str(), old);
+      }
+    }
+    char label[16];
+    sprintf_s(label, "round %d", round + 1);
+    print(label, best);
+    if (!improved) step *= 0.5;
+  }
+
+  // Merge into the calibration file.
+  std::vector<std::string> lines;
+  FILE* f = nullptr;
+  if (fopen_s(&f, cal_path, "r") == 0 && f) {
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+      int n = 0;
+      char key[64] = {};
+      if (sscanf_s(line, "%d %63s", &n, key, unsigned(sizeof(key))) == 2 && n == note &&
+          std::find(params.begin(), params.end(), std::string(key)) != params.end())
+        continue;
+      std::string s = line;
+      while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+      lines.push_back(s);
+    }
+    fclose(f);
+  }
+  if (lines.empty()) {
+    lines.push_back("# Drum kit calibration: \"note parameter value\" lines applied to the physical kit (drum_kit.cpp).");
+    lines.push_back("# Rebuild with DSP_Render drumfit (see README.md).");
+    lines.push_back("name VCSL drums");
+  }
+  for (size_t i = 0; i < params.size(); ++i) {
+    char line[128];
+    sprintf_s(line, "%d %s %.5g", note, params[i].c_str(), value[i]);
+    lines.push_back(line);
+  }
+  if (fopen_s(&f, cal_path, "w") != 0 || !f) { fprintf(stderr, "cannot write %s\n", cal_path); return 1; }
+  for (auto& l : lines) fprintf(f, "%s\n", l.c_str());
+  fclose(f);
+  printf("wrote %s\n", cal_path);
+  return 0;
+}
+
 // A short drum performance on channel 10 (no file needed): rock groove with ghost notes and
 // hi-hat accents, open/closed/pedal hi-hat chokes, a tom fill into a crash, a ride section with
 // bell accents, a snare roll and a final crash + kick. Shows velocity, round-robin and chokes.
@@ -955,6 +1123,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "drumcompare")) result = CmdDrumCompare(argc, argv);
     else if (!strcmp(argv[1], "drumcpu")) result = CmdDrumCpu(argc, argv);
     else if (!strcmp(argv[1], "drumgroove")) result = CmdDrumGroove(argc, argv);
+    else if (!strcmp(argv[1], "drumfit")) result = CmdDrumFit(argc, argv);
     else if (!strcmp(argv[1], "analyze")) result = CmdAnalyze(argc, argv);
     else if (!strcmp(argv[1], "survey")) result = CmdSurvey(argc, argv);
     else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
@@ -973,6 +1142,7 @@ int main(int argc, char** argv) {
             "  DSP_Render drumcompare <note> <recording.wav> [ab_out.wav|-] [velocity]\n"
             "  DSP_Render drumcpu [seconds] [rate]\n"
             "  DSP_Render drumgroove <out.wav> [rate] [bpm]\n"
+            "  DSP_Render drumfit <cal file> <note> <param,param,...> <recording.wav>@<velocity> ... [-rounds N]\n"
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
             "  DSP_Render survey <folder of recordings>\n"
             "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms]\n"

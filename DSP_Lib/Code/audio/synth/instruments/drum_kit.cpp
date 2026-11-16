@@ -19,6 +19,8 @@
 #define NOMINMAX  // std::min/std::max, not the windows.h macros
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <vector>
 #include <emmintrin.h>
 #include "../../../dsp.h"
@@ -83,7 +85,7 @@ struct ModeListDef {
 // Filtered noise straight to the output (hand claps, breath, scrape noise...).
 struct NoiseDef { float amount, hz, q, hp_hz, t60, tail, tail_t60, sweep, sweep_ms; };
 // Snare wires: noise gated by the snare-side head displacement.
-struct WireDef { float amount, threshold, hp_hz, lp_hz; };
+struct WireDef { float amount, threshold, hp_hz, lp_hz, ring_ms; };
 // A driven tone (whistle, cuica friction drum, synth "High Q").
 struct ToneDef { float amount, hz, h2, h3, glide, glide_ms, warble_hz, warble_depth, attack_ms, hold_ms, t60; };
 // Stochastic / periodic collisions (shakers, jingles, guiro scrape, vibraslap, clap bursts).
@@ -227,7 +229,7 @@ struct KitTable {
     {
       PieceDef snare = Drum("Snare 14\"", 0.48f, 0.95f, 192, 0.5f, 0.2f, 9.0f, 0.5f, 0.6f, 380, 0.3f, 0.003f, 0.05f);
       Reso(snare, 1.62f, 0.5f, 0.35f);
-      snare.wires = {9.0f, 0.004f, 900, 10000};
+      snare.wires = {9.0f, 0.004f, 900, 10000, 12};
       int s = Add(snare);
       Articulation& hit = Set(38, Stroke("Acoustic Snare", s));
       hit.pos = 0.35f; hit.pos_jitter = 0.07f; hit.contact_ms = 0.5f;
@@ -568,7 +570,7 @@ struct Piece {
   const PieceDef* def = nullptr;
   Bank bank;
   double sr = 48000;
-  uint32_t seed = 1;
+  uint32_t seed = 1, seed0 = 1;  // seed0: restored by Silence() so tool renders repeat exactly
   int owner = -1;
   bool active = false;
   float level = 0;
@@ -617,25 +619,34 @@ uint32_t Hash(uint32_t x) {
   return x ? x : 1;
 }
 
-double BesselZero(int m, int n) {  // n-th positive zero of J_m
-  double x = std::max(0.5, double(m)), prev = std::cyl_bessel_j(double(m), x);
-  int found = 0;
-  for (; x < 80; x += 0.02) {
-    double v = std::cyl_bessel_j(double(m), x + 0.02);
-    if ((prev < 0) != (v < 0)) {
-      if (++found == n) {
-        double lo = x, hi = x + 0.02;
-        for (int i = 0; i < 50; ++i) {
-          double mid = 0.5 * (lo + hi);
-          if ((std::cyl_bessel_j(double(m), mid) < 0) == (std::cyl_bessel_j(double(m), lo) < 0)) lo = mid;
-          else hi = mid;
+const int kBesselOrders = 25, kBesselZeros = 8;
+
+// n-th positive zero of J_m (m < 25, n <= 8), computed once for the whole process.
+double BesselZero(int m, int n) {
+  struct Table {
+    double z[kBesselOrders][kBesselZeros] = {};
+    Table() {
+      for (int m = 0; m < kBesselOrders; ++m) {
+        double x = std::max(0.5, double(m)), prev = std::cyl_bessel_j(double(m), x);
+        for (int found = 0; found < kBesselZeros && x < 80; x += 0.05) {
+          double v = std::cyl_bessel_j(double(m), x + 0.05);
+          if ((prev < 0) != (v < 0)) {
+            double lo = x, hi = x + 0.05;
+            const bool lo_negative = prev < 0;
+            for (int i = 0; i < 40; ++i) {
+              double mid = 0.5 * (lo + hi);
+              if ((std::cyl_bessel_j(double(m), mid) < 0) == lo_negative) lo = mid;
+              else hi = mid;
+            }
+            z[m][found++] = 0.5 * (lo + hi);
+          }
+          prev = v;
         }
-        return 0.5 * (lo + hi);
       }
     }
-    prev = v;
-  }
-  return 0;
+  };
+  static const Table table;
+  return m >= 0 && m < kBesselOrders && n >= 1 && n <= kBesselZeros ? table.z[m][n - 1] : 0;
 }
 
 // ---- building the bodies ------------------------------------------------------------------
@@ -1014,6 +1025,11 @@ void Strike(Piece& p, const Articulation& a, float velocity) {
     StrikeGains(p, pos, b.g);
     const float jitter = d.body == kMetalBody ? 0.35f : 0.06f;  // a cymbal is never hit twice in the same spot
     for (int k = 0; k < b.count; ++k) b.g[k] *= expf(jitter * p.Gauss());
+    // A plate's mode shapes change sign all over its surface, so at the strike point the modes
+    // start with random signs (not all in phase, which would make one huge spike).
+    if (d.body == kMetalBody)
+      for (int k = 0; k < b.count; ++k)
+        if (p.Random() < 0) b.g[k] = -b.g[k];
   }
 
   // Contact pulse: a harder hit compresses the stick tip / felt more, so contact is shorter
@@ -1053,7 +1069,7 @@ void Strike(Piece& p, const Articulation& a, float velocity) {
   if (d.wires.amount > 0) {
     p.wire_gain = d.wires.amount * a.wires;
     p.wire_gate_coef = 1 - expf(-2 * float(kPi) * 6000 / sr);
-    p.wire_ring_coef = expf(-1.0f / (0.012f * sr));
+    p.wire_ring_coef = expf(-1.0f / (std::max(0.5f, d.wires.ring_ms) * 0.001f * sr));
   }
   if (d.rattle.amount > 0 && a.rattle > 0) {
     p.rat_energy = 1;
@@ -1074,7 +1090,7 @@ void Strike(Piece& p, const Articulation& a, float velocity) {
 void InitPiece(Piece& p, const PieceDef& d, double sr, uint32_t seed) {
   p.def = &d;
   p.sr = sr;
-  p.seed = Hash(seed);
+  p.seed = p.seed0 = Hash(seed);
   std::vector<ModeSpec> specs;
   if (d.body == kMembraneBody) BuildMembrane(d.mem, sr, seed, specs);
   else if (d.body == kMetalBody) BuildMetal(d.metal, sr, specs);
@@ -1137,29 +1153,58 @@ void InitPiece(Piece& p, const PieceDef& d, double sr, uint32_t seed) {
   ResetPiece(p);
 }
 
+// Calibratable parameters: float fields of the piece definition or of the articulation.
+struct ParamInfo { const char* name; bool piece; size_t offset; };
+#define PP(name, field) {name, true, offsetof(PieceDef, field)}
+#define PA(name, field) {name, false, offsetof(Articulation, field)}
+const ParamInfo kParams[] = {
+    PP("f01", mem.f01), PP("air", mem.air), PP("cavity", mem.cavity), PP("max_ratio", mem.max_ratio),
+    PP("t60", mem.t60), PP("t60_axisym", mem.t60_axisym), PP("damp_hz", mem.damp_hz), PP("tilt", mem.tilt),
+    PP("split", mem.split), PP("glide", mem.glide), PP("reso_ratio", mem.reso_ratio), PP("reso_gain", mem.reso_gain),
+    PP("reso_t60", mem.reso_t60),
+    PP("f_lo", metal.f_lo), PP("f_hi", metal.f_hi), PP("peak_lo", metal.peak_lo), PP("peak_hi", metal.peak_hi),
+    PP("spread", metal.spread), PP("t60_lo", metal.t60_lo), PP("t60_hi", metal.t60_hi), PP("cascade", metal.cascade),
+    PP("cascade_hz", metal.cascade_hz), PP("cascade_attack_ms", metal.cascade_attack_ms),
+    PP("cascade_t60", metal.cascade_t60), PP("bell_hz", metal.bell_hz), PP("bell_t60", metal.bell_t60),
+    PP("noise_amount", noise.amount), PP("noise_hz", noise.hz), PP("noise_q", noise.q), PP("noise_t60", noise.t60),
+    PP("wire_amount", wires.amount), PP("wire_threshold", wires.threshold), PP("wire_hp_hz", wires.hp_hz),
+    PP("wire_lp_hz", wires.lp_hz), PP("wire_ring_ms", wires.ring_ms),
+    PP("piece_gain", gain), PP("pan", pan),
+    PA("pos", pos), PA("pos_jitter", pos_jitter), PA("contact_ms", contact_ms), PA("contact_exp", contact_exp),
+    PA("drive", drive), PA("click", click), PA("click_hz", click_hz), PA("click_q", click_q), PA("click_ms", click_ms),
+    PA("art_noise", noise), PA("art_wires", wires), PA("art_cascade", cascade), PA("damp", damp), PA("art_gain", gain),
+};
+#undef PP
+#undef PA
+const int kParamCount = int(sizeof(kParams) / sizeof(kParams[0]));
+
 }  // namespace
 
 // ============================================================================================
 
 struct DrumKit::Impl {
+  KitTable kit = Kit();  // this kit's own copy: calibration changes it
+  std::string cal_name;
   std::vector<Piece> pieces;
   struct Slot { int piece = -1; bool active = false; } voices[Polyphony];
 };
 
-DrumKit::DrumKit() : InstrumentProcessor(), impl_(nullptr), cdata_(nullptr) {}
+DrumKit::DrumKit() : InstrumentProcessor(), impl_(new Impl()), cdata_(nullptr) {}
 
 DrumKit::~DrumKit() {
   Unload();
+  delete impl_;
 }
 
 int DrumKit::Load() {
   if (loaded_)
     return S_FALSE;
-  const KitTable& kit = Kit();
-  impl_ = new Impl();
-  impl_->pieces.resize(kit.pieces.size());  // never resized again: banks point into their own memory
+  const KitTable& kit = impl_->kit;
+  impl_->pieces.clear();
+  impl_->pieces.resize(kit.pieces.size());  // never resized while loaded: banks point into their own memory
   for (size_t i = 0; i < kit.pieces.size(); ++i)
     InitPiece(impl_->pieces[i], kit.pieces[i], double(sample_rate_), uint32_t(0x1234 + 977 * i));
+  for (auto& s : impl_->voices) s = Impl::Slot();
   loaded_ = true;
   return S_OK;
 }
@@ -1168,10 +1213,79 @@ int DrumKit::Unload() {
   if (!loaded_)
     return S_FALSE;
   for (Piece& p : impl_->pieces) p.bank.Free();
-  delete impl_;
-  impl_ = nullptr;
+  impl_->pieces.clear();
   loaded_ = false;
   return S_OK;
+}
+
+int DrumKit::ParamCount() { return kParamCount; }
+const char* DrumKit::ParamName(int i) { return i >= 0 && i < kParamCount ? kParams[i].name : nullptr; }
+
+static float* ParamField(DrumKit::Impl* impl, int note, const char* name, int* piece_out) {
+  if (note < kFirstNote || note > kLastNote) return nullptr;
+  Articulation& a = impl->kit.notes[note - kFirstNote];
+  if (a.piece < 0) return nullptr;
+  for (const ParamInfo& p : kParams) {
+    if (strcmp(p.name, name)) continue;
+    *piece_out = p.piece ? a.piece : -1;
+    char* base = p.piece ? reinterpret_cast<char*>(&impl->kit.pieces[a.piece]) : reinterpret_cast<char*>(&a);
+    return reinterpret_cast<float*>(base + p.offset);
+  }
+  return nullptr;
+}
+
+bool DrumKit::SetParam(int note, const char* name, float value) {
+  int piece = -1;
+  float* field = ParamField(impl_, note, name, &piece);
+  if (!field) return false;
+  *field = value;
+  if (piece >= 0 && loaded_) {  // rebuild the piece's modes
+    Piece& p = impl_->pieces[piece];
+    if (p.owner >= 0) impl_->voices[p.owner].active = false;
+    p.bank.Free();
+    p = Piece();
+    InitPiece(p, impl_->kit.pieces[piece], double(sample_rate_), uint32_t(0x1234 + 977 * piece));
+  }
+  return true;
+}
+
+bool DrumKit::GetParam(int note, const char* name, float* value) const {
+  int piece = -1;
+  float* field = ParamField(impl_, note, name, &piece);
+  if (!field) return false;
+  *value = *field;
+  return true;
+}
+
+bool DrumKit::LoadCalibration(const char* path) {
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "r") != 0 || !f) return false;
+  char line[512];
+  int applied = 0;
+  while (fgets(line, sizeof(line), f)) {
+    char key[64] = {}, text[256] = {};
+    int note = 0;
+    float value = 0;
+    if (line[0] == '#') continue;
+    if (sscanf_s(line, "name %255[^\r\n]", text, unsigned(sizeof(text))) == 1) { impl_->cal_name = text; continue; }
+    if (sscanf_s(line, "%d %63s %f", &note, key, unsigned(sizeof(key)), &value) == 3 && SetParam(note, key, value))
+      ++applied;
+  }
+  fclose(f);
+  return applied > 0;
+}
+
+const std::string& DrumKit::calibration_name() const { return impl_->cal_name; }
+
+void DrumKit::Silence() {
+  if (!loaded_) return;
+  for (Piece& p : impl_->pieces) {
+    if (p.owner >= 0) impl_->voices[p.owner].active = false;
+    p.owner = -1;
+    p.active = false;
+    ResetPiece(p);
+    p.seed = p.seed0;
+  }
 }
 
 const char* DrumKit::DrumName(int note) {
@@ -1186,8 +1300,8 @@ const char* DrumKit::PieceName(int note) {
 }
 
 int DrumKit::PieceModes(int note) const {
-  if (!impl_ || note < kFirstNote || note > kLastNote) return 0;
-  const Articulation& a = Kit().notes[note - kFirstNote];
+  if (!loaded_ || note < kFirstNote || note > kLastNote) return 0;
+  const Articulation& a = impl_->kit.notes[note - kFirstNote];
   return a.piece >= 0 ? impl_->pieces[a.piece].bank.count : 0;
 }
 
@@ -1208,7 +1322,7 @@ int DrumKit::NoteOn(int v) {
   slot.piece = -1;
   slot.active = false;
   if (nd.note < kFirstNote || nd.note > kLastNote) return S_OK;
-  const Articulation& a = Kit().notes[nd.note - kFirstNote];
+  const Articulation& a = impl_->kit.notes[nd.note - kFirstNote];
   if (a.piece < 0) return S_OK;
   Piece& p = impl_->pieces[a.piece];
   // One physical object, one voice: the new hit takes over the piece's vibration.
@@ -1227,7 +1341,7 @@ int DrumKit::NoteOff(int) {
 }
 
 bool DrumKit::IsVoiceActive(int v) const {
-  if (!impl_) return false;
+  if (!loaded_) return false;
   const auto& slot = impl_->voices[v];
   if (!slot.active) return false;
   const Piece& p = impl_->pieces[slot.piece];
@@ -1239,7 +1353,7 @@ real_t DrumKit::VoiceLevel(int v) const {
 }
 
 real_t DrumKit::VoicePan(int v) const {
-  if (!impl_ || impl_->voices[v].piece < 0) return 0.5f;
+  if (!loaded_ || impl_->voices[v].piece < 0) return 0.5f;
   return impl_->pieces[impl_->voices[v].piece].def->pan;
 }
 

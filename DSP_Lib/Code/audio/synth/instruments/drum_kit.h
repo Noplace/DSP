@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <string>
+
 namespace dsp {
 namespace audio {
 namespace synth {
@@ -68,6 +70,17 @@ class DrumKit : public InstrumentProcessor {
   // Name of the physical piece a note plays and its number of modes (for tools/CPU reports).
   static const char* PieceName(int note);
   int PieceModes(int note) const;
+
+  // Calibration: named parameters of a note's articulation or of the piece it plays (see
+  // ParamName). Changing a piece parameter rebuilds that piece. Files hold "note name value"
+  // lines (and "name <text>"); LoadCalibration applies them to this kit, before or after Load.
+  static int ParamCount();
+  static const char* ParamName(int i);
+  bool SetParam(int note, const char* name, float value);
+  bool GetParam(int note, const char* name, float* value) const;
+  bool LoadCalibration(const char* path);
+  const std::string& calibration_name() const;
+  void Silence();  // stop every piece at once (tools)
 
   struct Impl;
 

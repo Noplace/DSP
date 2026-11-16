@@ -166,7 +166,10 @@ void MidiSynth::BuildInstrumentBank() {
 
   using instruments::ModalInstrument;
   auto modal = [&](const instruments::ModalParams& p) { return add(new ModalInstrument(p)); };
-  drum_kit_ = add(new instruments::DrumKit());  // physically modelled kit (drum_kit.h)
+  auto kit = new instruments::DrumKit();  // physically modelled kit (drum_kit.h), fitted to recordings if found
+  if (!calibration_dir_.empty() && kit->LoadCalibration((calibration_dir_ + "\\drums_vcsl.cal").c_str()))
+    calibrated_instruments_.push_back("drum kit (" + kit->calibration_name() + ")");
+  drum_kit_ = add(kit);
 
   assign(0, 5, piano);           // pianos (preset) ...
   if (grand) {                   // ... or calibrated from recordings
