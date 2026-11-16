@@ -29,6 +29,7 @@ struct NoteData {
     real_t velocity;
     int note;
     bool on;
+    bool quiet_release;  // let go without a key-up of its own (sustain pedal, re-strike, all notes off)
 };
 
 const int note_count = 128; // MIDI notes 0..127

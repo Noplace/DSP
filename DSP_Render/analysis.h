@@ -67,4 +67,27 @@ bool AnalyzeNote(const Audio& audio, int midi_note, NoteAnalysis& result, int ma
 
 void PrintAnalysis(const NoteAnalysis& a);
 
+// Key-up (release) recording of a held note: the file starts at key-up with the note still
+// ringing, then the dampers stop the string. The string's partials are tracked one by one
+// (heterodyned and smoothed over a few periods) and subtracted, which leaves the sound of the
+// key-up itself: damper thump, key and hammer return noise. The partials' envelopes give the
+// damper's timing and decay; a synth plays that tail with its own string.
+struct ReleaseAnalysis {
+  std::vector<float> key_up;   // the recording minus the string, trimmed where it reaches the noise floor
+  double damper_t60_s = 0;     // decay of the string once the dampers touch (0 = not measured)
+  double damper_delay_s = 0;   // file start (key-up) to the dampers touching the string
+  double string_db = -300;     // RMS of the recording over its first 20 ms (the note before key-up)
+  double key_up_db = -300;     // loudest 40 ms RMS of the key-up sound
+  double removed_db = 0;       // energy of the recording vs what is left after removing the string
+  int partials = 0;            // partials removed
+  int timed_partials = 0;      // partials the damper timing was measured on (their energy together)
+  double string_snr_db = 0;    // string at key-up vs the floor it decays into (more = more reliable)
+  std::vector<double> string_db_env;  // level of those partials together (dB), every env_dt_s
+  double env_dt_s = 0;
+};
+
+// f0 and B (from the sustained recording of the same note) place the partials.
+bool AnalyzeRelease(const Audio& audio, double f0_hz, double inharmonicity, ReleaseAnalysis& result,
+                    double max_len_s = 0.4);
+
 }  // namespace analysis

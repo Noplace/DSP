@@ -10,6 +10,12 @@
 //       Time the render of <voices> simultaneous held notes.
 //   DSP_Render drums [rate] [wav_dir]
 //       Survey every GM drum note: peak level and decay (optionally one WAV each).
+//   DSP_Render release <key-up.wav> <sustained.wav> [key_up_out.wav|-] [env]
+//       Split a key-up recording into string and key-up sound; damper timing and decay.
+//   DSP_Render keyup <program> <key-up.wav> <sustained.wav> <ab_out.wav> [velocity]
+//       The synth's key-up against a recording's (same hold, same scale), with an A/B file.
+//   DSP_Render clicks <render.wav> [ratio]
+//       List clicks (steps or kinks in the waveform) in a render.
 #define NOMINMAX  // use std::min/std::max, not the windows.h macros
 #include <algorithm>
 #include <stdio.h>
@@ -369,15 +375,40 @@ int CmdSurvey(int argc, char** argv) {
   return 0;
 }
 
+// Folder of key-up recordings for a folder of sustained ones: the given one ("-" = none), else a
+// sibling folder named "release" if there is one.
+std::string ReleaseFolder(const char* sustain_folder, const char* given) {
+  if (given) return strcmp(given, "-") ? std::string(given) : std::string();
+  std::string dir = sustain_folder;
+  while (!dir.empty() && (dir.back() == '\\' || dir.back() == '/')) dir.pop_back();
+  const size_t slash = dir.find_last_of("\\/");
+  std::string sibling = (slash == std::string::npos ? std::string(".") : dir.substr(0, slash)) + "\\release";
+  const DWORD attr = GetFileAttributesA(sibling.c_str());
+  return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) ? sibling : std::string();
+}
+
 // Builds a calibration file from a folder of recorded notes: measured string parameters per note
 // plus the excitation (pluck + body) obtained by inverse-filtering each recording with the fitted
-// string loop.
+// string loop. Key-up recordings (a "release" folder next to it, or the one given) add each note's
+// damper timing and decay and the key-up sound per velocity layer.
 int CmdCalibrate(int argc, char** argv) {
   if (argc < 4) return 2;
-  const double exc_ms = argc > 4 ? atof(argv[4]) : 200.0;
+  const double exc_ms = argc > 4 && strcmp(argv[4], "-") ? atof(argv[4]) : 200.0;
   auto files = CollectRecordings(argv[2]);
   if (files.empty()) { fprintf(stderr, "no WAV files with note names in %s\n", argv[2]); return 1; }
   int shift = ConsensusOctave(files);
+  const std::string release_dir = ReleaseFolder(argv[2], argc > 5 ? argv[5] : nullptr);
+  std::vector<std::pair<int, std::string>> release_files;
+  if (!release_dir.empty()) {
+    release_files = CollectRecordings(release_dir.c_str());
+    printf("key-up recordings: %zu in %s\n", release_files.size(), release_dir.c_str());
+  }
+  // Key-up recording of a named note and velocity layer, or empty.
+  auto release_file = [&](int named, int layer) {
+    for (auto& [n, path] : release_files)
+      if (n == named && std::max(1, analysis::VelocityLayerFromFileName(path.c_str())) == layer) return path;
+    return std::string();
+  };
   using namespace synth::instruments;
   StringCalibration cal;
   // Name: the output file's stem (e.g. "harpsichord_english").
@@ -429,10 +460,32 @@ int CmdCalibrate(int argc, char** argv) {
     printf("%-5s %4d  %8.2f  %8.1e  %6.2f  %6.2f  %5.1f/%5.1f c %s |", NoteName(a.midi_note, name, sizeof(name)),
            int(layers.size()), a.f0_hz, a.inharmonicity, t60(a.f0_hz), t60(2000), design.rms_partial_error_cents,
            design.max_partial_error_cents, disp);
+    std::vector<std::pair<double, double>> damper_t60, damper_delay;  // (value, dB range it was measured over)
+    std::string release_log;
     for (auto& [layer, path] : layers) {
       analysis::Audio la;
       analysis::NoteAnalysis lna;
       if (!analysis::ReadWav(path.c_str(), la) || !analysis::AnalyzeNote(la, named, lna, 40, shift)) continue;
+      // Key-up sound of this layer (the string's pitch from the note's analysis).
+      std::vector<float> key_up;
+      const std::string rel_path = release_file(named, layer);
+      analysis::Audio ra;
+      analysis::ReleaseAnalysis rel;
+      if (!rel_path.empty() && analysis::ReadWav(rel_path.c_str(), ra) && ra.rate == la.rate &&
+          analysis::AnalyzeRelease(ra, a.f0_hz, a.inharmonicity, rel)) {
+        key_up = std::move(rel.key_up);
+        if (rel.damper_t60_s > 0) {
+          damper_t60.push_back({rel.damper_t60_s, rel.string_snr_db});
+          damper_delay.push_back({rel.damper_delay_s, rel.string_snr_db});
+        }
+        char buf[128];
+        sprintf_s(buf, "  vl%d T60 %.2f s +%2.0f ms (%2.0f dB), string %5.1f dB, key-up %5.1f dB %3.0f ms", layer,
+                  rel.damper_t60_s, rel.damper_delay_s * 1000, rel.string_snr_db, rel.string_db, rel.key_up_db,
+                  key_up.size() * 1000.0 / ra.rate);
+        release_log += buf;
+      } else if (!rel_path.empty()) {
+        release_log += "  (" + rel_path + ": analysis failed)";
+      }
       StringLoop loop;
       loop.Allocate(int(la.rate / 8) + 64);
       loop.SetDesign(design);
@@ -452,6 +505,7 @@ int CmdCalibrate(int argc, char** argv) {
       el.velocity = float(layer) / max_layer;
       el.peak = float(lna.peak);
       el.partials = PartialDecays(lna);
+      el.release = std::move(key_up);
       el.samples.assign(residual.begin(), residual.begin() + std::min(exc_len, residual.size()));
       const size_t fade = el.samples.size() / 4;  // half-Hann fade over the last quarter
       for (size_t i = 0; i < fade; ++i) {
@@ -467,21 +521,39 @@ int CmdCalibrate(int argc, char** argv) {
       cn.layers.push_back(std::move(el));
     }
     printf("\n");
+    // Dampers: the same for every layer (the layers only differ in how loud the string still was),
+    // so the median over the layers, weighted by how far down each could follow the decay.
+    auto median = [](std::vector<std::pair<double, double>> v) {
+      std::sort(v.begin(), v.end());
+      double total = 0, acc = 0;
+      for (auto& p : v) total += p.second;
+      for (auto& p : v)
+        if ((acc += p.second) >= 0.5 * total) return p.first;
+      return 0.0;
+    };
+    cn.release_t60_s = float(median(damper_t60));
+    cn.damper_delay_s = float(median(damper_delay));
+    if (!release_log.empty())
+      printf("      key-up:%s  -> dampers T60 %.2f s after %.0f ms\n", release_log.c_str(), cn.release_t60_s,
+             cn.damper_delay_s * 1000);
     // Single-layer instruments keep the plain excitation field (version 1 behaviour).
     if (cn.layers.size() == 1) {
       cn.excitation = std::move(cn.layers[0].samples);
       cn.partials = std::move(cn.layers[0].partials);
+      cn.release = std::move(cn.layers[0].release);
       cn.layers.clear();
     }
     cal.notes.push_back(std::move(cn));
   }
   if (!cal.Save(argv[3])) { fprintf(stderr, "cannot write %s\n", argv[3]); return 1; }
-  size_t samples = 0;
+  size_t samples = 0, release_samples = 0;
   for (auto& n : cal.notes) {
     samples += n.excitation.size();
-    for (auto& l : n.layers) samples += l.samples.size();
+    release_samples += n.release.size();
+    for (auto& l : n.layers) { samples += l.samples.size(); release_samples += l.release.size(); }
   }
-  printf("wrote %s: %zu notes, %.0f KB of excitation\n", argv[3], cal.notes.size(), samples * 4 / 1024.0);
+  printf("wrote %s: %zu notes, %.0f KB of excitation, %.0f KB of key-up sounds\n", argv[3], cal.notes.size(),
+         samples * 4 / 1024.0, release_samples * 4 / 1024.0);
   return 0;
 }
 
@@ -502,6 +574,7 @@ int CmdCompare(int argc, char** argv) {
 
   Engine e(rec.rate);
   if (e.synth.calibrated_instruments().empty()) printf("note: no calibration found (looked in '%s')\n", e.synth.calibration_dir().c_str());
+  for (const auto& c : e.synth.calibrated_instruments()) printf("calibrated: %s\n", c.c_str());
   const double seconds = rec.mono.size() / double(rec.rate);
   auto stereo = RenderNote(e, program, ra.midi_note, velocity, std::max(0.5, seconds - 0.5), 0.5);
   analysis::Audio syn;
@@ -964,6 +1037,157 @@ int CmdCpu(int argc, char** argv) {
   return 0;
 }
 
+// Splits a key-up recording into the string (removed) and the key-up sound, using the pitch of the
+// matching sustained recording; optionally writes the key-up sound to a WAV.
+int CmdRelease(int argc, char** argv) {
+  if (argc < 4) return 2;
+  analysis::Audio rel, sus;
+  analysis::NoteAnalysis a;
+  if (!analysis::ReadWav(argv[2], rel) || !analysis::ReadWav(argv[3], sus)) { fprintf(stderr, "cannot read the recordings\n"); return 1; }
+  if (!analysis::AnalyzeNote(sus, analysis::NoteFromFileName(argv[3]), a)) { fprintf(stderr, "cannot analyse %s\n", argv[3]); return 1; }
+  analysis::ReleaseAnalysis r;
+  if (!analysis::AnalyzeRelease(rel, a.f0_hz, a.inharmonicity, r)) { fprintf(stderr, "cannot analyse %s\n", argv[2]); return 1; }
+  char name[8];
+  printf("%s (MIDI %d, f0 %.2f Hz): string at key-up %.1f dB, %d partials removed (%.1f dB of the file)\n",
+         NoteName(a.midi_note, name, sizeof(name)), a.midi_note, a.f0_hz, r.string_db, r.partials, r.removed_db);
+  printf("dampers: touch %.0f ms after key-up, then T60 %.3f s (%d partials, followed %.0f dB down); key-up sound peak %.1f dB (40 ms RMS), %.0f ms long\n",
+         r.damper_delay_s * 1000, r.damper_t60_s, r.timed_partials, r.string_snr_db, r.key_up_db, r.key_up.size() * 1000.0 / rel.rate);
+  if (argc > 4 && strcmp(argv[4], "-")) {
+    std::vector<float> stereo;
+    for (float v : r.key_up) { stereo.push_back(v); stereo.push_back(v); }
+    WriteWav(argv[4], stereo, rel.rate);
+  }
+  if (argc > 5) {  // the string's level after key-up, every 10 ms
+    printf("string level (dB, every 10 ms):");
+    const size_t every = std::max<size_t>(1, size_t(0.01 / r.env_dt_s + 0.5));
+    for (size_t i = 0; i < r.string_db_env.size(); i += every) printf("%s%.0f", i % (every * 20) ? " " : "\n  ", r.string_db_env[i]);
+    printf("\n");
+  }
+  return 0;
+}
+
+// 20 ms RMS (dB) every 10 ms.
+std::vector<double> RmsEnvelopeDb(const std::vector<float>& x, uint32_t rate) {
+  std::vector<double> env;
+  const size_t step = rate / 100, win = rate / 50;
+  for (size_t i = 0; i + win <= x.size(); i += step) {
+    double e = 0;
+    for (size_t j = i; j < i + win; ++j) e += double(x[j]) * x[j];
+    env.push_back(10 * log10(e / win + 1e-30));
+  }
+  return env;
+}
+
+// Key-up of the synth against a key-up recording. The recording's note was held until its
+// string had decayed to the level the recording starts at; the sustained recording of the same
+// note and layer says how long that took, so the synth holds its note as long, then lets go.
+// Both are split the same way (string removed, key-up sound left) and printed side by side; the
+// A/B file has the recording, a gap, then the synth, on a common scale (the synth matched to the
+// sustained recording's attack peak), so string and key-up levels compare directly.
+int CmdKeyUp(int argc, char** argv) {
+  if (argc < 6) return 2;
+  const int program = atoi(argv[2]);
+  const char* rel_path = argv[3];
+  const char* sus_path = argv[4];
+  const char* ab_path = argv[5];
+  analysis::Audio rel, sus;
+  analysis::NoteAnalysis a;
+  if (!analysis::ReadWav(rel_path, rel) || !analysis::ReadWav(sus_path, sus) || rel.rate != sus.rate) {
+    fprintf(stderr, "cannot read the recordings (or their rates differ)\n");
+    return 1;
+  }
+  if (!analysis::AnalyzeNote(sus, analysis::NoteFromFileName(sus_path), a)) { fprintf(stderr, "cannot analyse %s\n", sus_path); return 1; }
+  const int layer = analysis::VelocityLayerFromFileName(rel_path);
+  const int velocity = argc > 6 ? atoi(argv[6]) : layer > 0 ? std::min(127, int(layer / 4.0 * 127 + 0.5)) : 100;
+  analysis::ReleaseAnalysis rr;
+  if (!analysis::AnalyzeRelease(rel, a.f0_hz, a.inharmonicity, rr)) { fprintf(stderr, "cannot analyse %s\n", rel_path); return 1; }
+
+  // Hold time: when the sustained recording has decayed to the key-up recording's first 20 ms.
+  const std::vector<double> sus_env = RmsEnvelopeDb(sus.mono, sus.rate);
+  size_t peak_i = 0;
+  for (size_t i = 0; i < sus_env.size() && i < 50; ++i) if (sus_env[i] > sus_env[peak_i]) peak_i = i;
+  size_t hold_i = peak_i;
+  while (hold_i + 1 < sus_env.size() && sus_env[hold_i] > rr.string_db) ++hold_i;
+  const double onset_s = a.onset / double(sus.rate);
+  const double hold_s = std::max(0.3, hold_i * 0.01 - onset_s);
+  float sus_peak = 0;
+  for (float v : sus.mono) sus_peak = std::max(sus_peak, fabsf(v));
+
+  Engine e(rel.rate);
+  const double tail_s = rel.mono.size() / double(rel.rate);
+  std::vector<float> syn = ToMono(RenderNote(e, program, a.midi_note, velocity, hold_s, tail_s));
+  float syn_peak = 1e-9f;
+  for (float v : syn) syn_peak = std::max(syn_peak, fabsf(v));
+  const float k = sus_peak / syn_peak;  // synth -> recording scale
+  const size_t off = std::min(syn.size(), size_t(hold_s * rel.rate + 0.5));
+  analysis::Audio sa;
+  sa.rate = rel.rate;
+  sa.channels = 1;
+  for (size_t i = off; i < syn.size() && sa.mono.size() < rel.mono.size(); ++i) sa.mono.push_back(syn[i] * k);
+  analysis::ReleaseAnalysis sr;
+  if (!analysis::AnalyzeRelease(sa, a.f0_hz, a.inharmonicity, sr)) { fprintf(stderr, "cannot analyse the synth's key-up\n"); return 1; }
+
+  char name[8];
+  const double ref = 20 * log10(sus_peak);
+  printf("%s, MIDI %d (%s), velocity %d, program %d: held %.1f s (sustained recording down to the key-up recording's level)\n",
+         rel_path, a.midi_note, NoteName(a.midi_note, name, sizeof(name)), velocity, program, hold_s);
+  printf("levels in dB vs the attack peak     recording   synth\n");
+  printf("  string at key-up (first 20 ms)    %8.1f  %7.1f\n", rr.string_db - ref, sr.string_db - ref);
+  printf("  key-up sound (loudest 40 ms)      %8.1f  %7.1f\n", rr.key_up_db - ref, sr.key_up_db - ref);
+  printf("  dampers touch after (ms)          %8.0f  %7.0f\n", rr.damper_delay_s * 1000, sr.damper_delay_s * 1000);
+  printf("  damper T60 (s)                    %8.3f  %7.3f\n", rr.damper_t60_s, sr.damper_t60_s);
+  printf("string level after key-up (dB vs attack peak), every 50 ms:\n  rec:");
+  const size_t every = std::max<size_t>(1, size_t(0.05 / rr.env_dt_s + 0.5));
+  for (size_t i = 0; i < rr.string_db_env.size() && i * rr.env_dt_s < 0.8; i += every) printf(" %4.0f", rr.string_db_env[i] - ref);
+  printf("\n  syn:");
+  for (size_t i = 0; i < sr.string_db_env.size() && i * sr.env_dt_s < 0.8; i += every) printf(" %4.0f", sr.string_db_env[i] - ref);
+  printf("\n");
+
+  // A/B: both scaled so the attack peak would sit at -6 dBFS; the key-up recordings are quiet.
+  const float g = 0.5f / sus_peak;
+  std::vector<float> ab;
+  for (float v : rel.mono) { ab.push_back(v * g); ab.push_back(v * g); }
+  ab.insert(ab.end(), size_t(rel.rate) * 2 / 2, 0.0f);
+  for (float v : sa.mono) { ab.push_back(v * g); ab.push_back(v * g); }
+  if (WriteWav(ab_path, ab, rel.rate)) printf("A/B written to %s (recording, 0.5 s gap, synth)\n", ab_path);
+  return 0;
+}
+
+// Finds clicks in a render: 5 ms blocks whose peak second difference (a step or a kink in the
+// waveform) stands far above the blocks around them. Prints each one and the count.
+int CmdClicks(int argc, char** argv) {
+  if (argc < 3) return 2;
+  // Hammer attacks reach about 3x the blocks around them; a click (a step of 1% of full scale in
+  // a mezzo-forte passage) far more.
+  const double ratio = argc > 3 ? atof(argv[3]) : 8.0;
+  analysis::Audio a;
+  if (!analysis::ReadWav(argv[2], a)) { fprintf(stderr, "cannot read %s\n", argv[2]); return 1; }
+  const size_t block = std::max<uint32_t>(1, a.rate / 200);
+  std::vector<double> peak, rms;
+  for (size_t b = 2; b + block <= a.mono.size(); b += block) {
+    double p = 0, e = 0;
+    for (size_t i = b; i < b + block; ++i) {
+      const double d = a.mono[i] - 2.0 * a.mono[i - 1] + a.mono[i - 2];
+      p = std::max(p, fabs(d));
+      e += d * d;
+    }
+    peak.push_back(p);
+    rms.push_back(sqrt(e / block));
+  }
+  int clicks = 0;
+  for (size_t b = 4; b + 4 < peak.size(); ++b) {
+    std::vector<double> around;
+    for (size_t k = b - 4; k <= b + 4; ++k) if (k != b) around.push_back(rms[k]);
+    std::sort(around.begin(), around.end());
+    const double local = around[around.size() / 2];
+    if (peak[b] > 1e-4 && peak[b] > ratio * local && peak[b] > 3.0 * rms[b]) {
+      if (++clicks <= 40) printf("  %.3f s: second difference %.2e vs %.2e around\n", (b * block + 2) / double(a.rate), peak[b], local);
+    }
+  }
+  printf("%s: %d click(s) (%.1f s)\n", argv[2], clicks, a.mono.size() / double(a.rate));
+  return 0;
+}
+
 }  // namespace
 
 int CmdDrumCalibrate(int argc, char** argv);  // drum_calibrate.cpp
@@ -989,6 +1213,9 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
     else if (!strcmp(argv[1], "compare")) result = CmdCompare(argc, argv);
     else if (!strcmp(argv[1], "design")) result = CmdDesign(argc, argv);
+    else if (!strcmp(argv[1], "release")) result = CmdRelease(argc, argv);
+    else if (!strcmp(argv[1], "keyup")) result = CmdKeyUp(argc, argv);
+    else if (!strcmp(argv[1], "clicks")) result = CmdClicks(argc, argv);
   }
   if (result == 2) {
     fprintf(stderr,
@@ -1006,7 +1233,9 @@ int main(int argc, char** argv) {
             "  DSP_Render drumcal <manifest.txt> <out.cal>   (drum calibration from recorded hits)\n"
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
             "  DSP_Render survey <folder of recordings>\n"
-            "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms]\n"
+            "  DSP_Render calibrate <folder of recordings> <out.cal> [excitation_ms|-] [key-up folder|-]\n"
+            "      (key-up recordings: a sibling folder named 'release' unless given; '-' = none)\n"
+            "  DSP_Render release <key-up recording.wav> <sustained recording.wav> [key_up_out.wav]\n"
             "  DSP_Render compare <program> <recording.wav> [ab_out.wav|-] [velocity]\n");
   }
   return result;

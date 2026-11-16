@@ -135,12 +135,12 @@ class Channel : public Component {
       auto& v = voices_[i];
       if (v.note == note && (v.held || v.sustained)) {
         v.held = v.sustained = false;
-        v.instrument->ReleaseVoice(v.index);
+        v.instrument->ReleaseVoice(v.index, true);  // the new strike, not a key-up
       }
     }
     if (voice_count_ == kMaxVoices) {
       // Channel full: let go of the oldest entry.
-      voices_[0].instrument->ReleaseVoice(voices_[0].index);
+      voices_[0].instrument->ReleaseVoice(voices_[0].index, true);
       voices_[0] = voices_[--voice_count_];
     }
     Voice v;
@@ -174,7 +174,7 @@ class Channel : public Component {
       auto& v = voices_[i];
       if (v.held || v.sustained) {
         v.held = v.sustained = false;
-        v.instrument->ReleaseVoice(v.index);
+        v.instrument->ReleaseVoice(v.index, true);  // stop/panic, not a performed key-up
       }
     }
   }
@@ -186,7 +186,7 @@ class Channel : public Component {
         auto& v = voices_[i];
         if (v.sustained) {
           v.sustained = false;
-          v.instrument->ReleaseVoice(v.index);
+          v.instrument->ReleaseVoice(v.index, true);  // pedal up: the key came up earlier
         }
       }
     }

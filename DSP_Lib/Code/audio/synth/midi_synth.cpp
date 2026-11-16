@@ -133,7 +133,7 @@ void MidiSynth::BuildInstrumentBank() {
     std::string path = calibration_dir_ + "\\piano_steinway_b.cal";
     if (cal->Load(path.c_str()) && !cal->notes.empty()) {
       instruments::CalibratedStringOptions opt;
-      opt.release_t60_s = 0.3f;
+      opt.release_t60_s = 0.3f;       // dampers, where the calibration has no key-up measurements
       opt.level = 0.35f;
       opt.detune_cents = 0.6f;        // aftersound vs first stage (slow beating)
       opt.recorded_tuning = true;     // the piano's own stretched tuning

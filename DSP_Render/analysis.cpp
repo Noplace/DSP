@@ -410,4 +410,189 @@ void PrintAnalysis(const NoteAnalysis& a) {
          6.907755 / std::max(1e-9, a.b1 + a.b3 * 4e6));
 }
 
+namespace {
+
+// Centred running mean of m samples, zeros beyond the ends.
+template <typename T>
+void RunningMean(std::vector<T>& v, size_t m) {
+  const size_t n = v.size(), h = m / 2;
+  std::vector<T> pre(n + 1, T(0));
+  for (size_t i = 0; i < n; ++i) pre[i + 1] = pre[i] + v[i];
+  for (size_t i = 0; i < n; ++i) {
+    const size_t lo = i >= h ? i - h : 0, hi = std::min(n, i + h + 1);
+    v[i] = (pre[hi] - pre[lo]) / double(m);
+  }
+}
+
+// Steps a unit phasor by e^(j omega) per sample (renormalised now and then).
+struct Phasor {
+  cd ph{1.0}, rot;
+  explicit Phasor(double omega) : rot(std::polar(1.0, omega)) {}
+  cd Next(size_t i) {
+    cd out = ph;
+    ph *= rot;
+    if ((i & 1023) == 1023) ph /= std::abs(ph);
+    return out;
+  }
+};
+
+// Complex envelope of the component of x near omega (radians per sample): heterodyned to DC, then
+// three running means of m samples (about Gaussian, zero phase), normalised at the ends so the
+// edges are not pulled towards zero. The component itself is 2 Re(env[i] e^(j omega i)).
+std::vector<cd> TrackComponent(const std::vector<double>& x, double omega, size_t m) {
+  const size_t n = x.size();
+  std::vector<cd> z(n);
+  std::vector<double> ones(n, 1.0);
+  Phasor down(-omega);
+  for (size_t i = 0; i < n; ++i) z[i] = x[i] * down.Next(i);
+  for (int k = 0; k < 3; ++k) { RunningMean(z, m); RunningMean(ones, m); }
+  for (size_t i = 0; i < n; ++i) z[i] /= std::max(1e-6, ones[i]);
+  return z;
+}
+
+double MedianOf(std::vector<double> v) {
+  if (v.empty()) return -300;
+  std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+  return v[v.size() / 2];
+}
+
+}  // namespace
+
+bool AnalyzeRelease(const Audio& audio, double f0, double B, ReleaseAnalysis& r, double max_len_s) {
+  r = ReleaseAnalysis();
+  const uint32_t sr = audio.rate;
+  const size_t n = audio.mono.size();
+  if (f0 <= 0 || sr == 0 || n < sr / 4) return false;
+  std::vector<double> res(audio.mono.begin(), audio.mono.end());
+
+  // Partials ringing at key-up: peaks of the first 300 ms near n f0 sqrt(1 + B n^2) that stand
+  // clearly above the spectrum between partials.
+  const Spectrum spec = ComputeSpectrum(audio.mono, 0, std::min<size_t>(n, sr * 3 / 10), sr, 131072);
+  struct Track {
+    int k;
+    double omega;
+    std::vector<double> component;
+    std::vector<double> env_db;  // every `hop` samples, after the last pass
+  };
+  std::vector<Track> tracks;
+  const double f_max = std::min(0.45 * sr, 12000.0);
+  for (int k = 1; k <= 80; ++k) {
+    const double predicted = k * f0 * sqrt(1 + B * k * k);
+    if (predicted > f_max) break;
+    const double half = std::min(0.25 * f0, predicted * 0.02);
+    double lvl;
+    const double f = spec.FindPeak(predicted - half, predicted + half, &lvl);
+    if (f <= 0) continue;
+    std::vector<double> between;
+    for (int b = int((predicted + 0.35 * f0) / spec.bin_hz); b <= int((predicted + 0.65 * f0) / spec.bin_hz); ++b)
+      if (b > 0 && b < int(spec.db.size())) between.push_back(spec.db[b]);
+    if (between.empty() || lvl < MedianOf(between) + 10) continue;
+    tracks.push_back({k, 2 * kPi * f / sr, {}, {}});
+  }
+  r.partials = int(tracks.size());
+
+  // Subtract them, twice round (the second pass takes back what neighbours leaked into the first).
+  // Smoothing over about a period keeps the neighbours out; within 12-35 ms it still follows the
+  // damper's fast decay.
+  size_t m = size_t(std::min(0.035 * sr, std::max(0.012 * sr, sr / f0))) | 1;
+  const size_t hop = std::max<uint32_t>(1, sr / 400);
+  for (int pass = 0; pass < 2; ++pass) {
+    for (Track& t : tracks) {
+      if (pass > 0)
+        for (size_t i = 0; i < n; ++i) res[i] += t.component[i];
+      std::vector<cd> env = TrackComponent(res, t.omega, m);
+      t.component.resize(n);
+      Phasor up(t.omega);
+      for (size_t i = 0; i < n; ++i) {
+        t.component[i] = 2.0 * (env[i] * up.Next(i)).real();
+        res[i] -= t.component[i];
+      }
+      if (pass == 1) {
+        t.env_db.clear();
+        for (size_t i = 0; i < n; i += hop) t.env_db.push_back(ToDb(2.0 * std::abs(env[i])));
+      }
+    }
+  }
+
+  // Damper timing from the energy of the low partials together (one partial alone is often too
+  // close to the noise): the string holds its key-up level for a while, then the dampers take
+  // 15-30 dB off quickly; below that a slow residue (sympathetic ringing, noise) is left, and the
+  // unisons may beat back up on the way. Fit the quick fall up to its first crossing of 15 dB down
+  // (or 10 dB above the floor); the dampers touched where the line leaves the key-up level. Slower
+  // than 3 s is no damping at all (a missed or pedalled key-up).
+  const double dt = double(hop) / sr;
+  std::vector<double> e;
+  for (const Track& t : tracks) {
+    if (t.k > 16) continue;
+    if (e.empty()) e.assign(t.env_db.size(), 0.0);
+    for (size_t i = 0; i < e.size() && i < t.env_db.size(); ++i) e[i] += pow(10.0, t.env_db[i] / 10);
+    ++r.timed_partials;
+  }
+  for (double& v : e) v = 10 * log10(v + 1e-30);
+  r.string_db_env = e;
+  r.env_dt_s = dt;
+  if (e.size() >= 40) {
+    const double top = MedianOf(std::vector<double>(e.begin(), e.begin() + size_t(0.02 / dt) + 1));
+    const double floor = MedianOf(std::vector<double>(e.begin() + e.size() * 55 / 100, e.begin() + e.size() * 85 / 100));
+    size_t i1 = 0;
+    while (i1 < e.size() && e[i1] > top - 3) ++i1;
+    size_t i2 = i1;
+    const double stop = std::max(top - 15, floor + 10);
+    while (i2 < e.size() && e[i2] > stop) ++i2;
+    std::vector<double> x, y, w;
+    for (size_t i = i1; i <= i2 && i < e.size(); ++i) { x.push_back(i * dt); y.push_back(e[i]); w.push_back(1); }
+    double a, b;
+    if (top - stop >= 9 && x.size() >= 4 && FitLine(x, y, w, a, b) && b < -1) {
+      const double t60 = -60.0 / b, delay = std::max(0.0, (top - a) / b);
+      if (t60 >= 0.03 && t60 <= 3 && delay <= 0.25) {
+        r.damper_t60_s = t60;
+        r.damper_delay_s = delay;
+        r.string_snr_db = top - floor;
+      }
+    }
+  }
+
+  // Room rumble below the thump: 2nd-order Butterworth high-pass at 30 Hz.
+  {
+    const double w0 = 2 * kPi * 30.0 / sr, alpha = sin(w0) / sqrt(2.0), cw = cos(w0), a0 = 1 + alpha;
+    const double b0 = (1 + cw) / 2 / a0, b1 = -(1 + cw) / a0, a1 = -2 * cw / a0, a2 = (1 - alpha) / a0;
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (double& v : res) {
+      const double y = b0 * v + b1 * x1 + b0 * x2 - a1 * y1 - a2 * y2;
+      x2 = x1; x1 = v; y2 = y1; y1 = y; v = y;
+    }
+  }
+
+  // Trim the key-up sound where it settles into the noise floor (the files fade out at the end):
+  // 40 ms RMS every 10 ms, so single noise spikes do not count.
+  const size_t step = std::max<uint32_t>(1, sr / 100), win = 4 * step;
+  std::vector<double> rms_db;
+  for (size_t i = 0; i + win <= n; i += step) {
+    double e = 0;
+    for (size_t j = i; j < i + win; ++j) e += res[j] * res[j];
+    rms_db.push_back(10 * log10(e / win + 1e-30));
+  }
+  if (rms_db.size() < 10) return false;
+  const double floor = MedianOf(std::vector<double>(rms_db.begin() + rms_db.size() * 55 / 100,
+                                                    rms_db.begin() + rms_db.size() * 85 / 100));
+  size_t last = 0;
+  for (size_t i = 0; i < rms_db.size(); ++i) {
+    if (rms_db[i] > floor + 6) last = i;
+    r.key_up_db = std::max(r.key_up_db, rms_db[i]);
+  }
+  const size_t fade = sr / 50;
+  const size_t len = std::min({n, size_t(max_len_s * sr), last * step + win + fade});
+  r.key_up.assign(res.begin(), res.begin() + len);
+  for (size_t i = 0; i < std::min(fade, len); ++i)
+    r.key_up[len - 1 - i] *= float(0.5 - 0.5 * cos(kPi * i / fade));
+
+  double e0 = 0, e_all = 1e-30, e_res = 1e-30;
+  const size_t head = std::min<size_t>(n, sr / 50);
+  for (size_t i = 0; i < head; ++i) e0 += double(audio.mono[i]) * audio.mono[i];
+  for (size_t i = 0; i < n; ++i) { e_all += double(audio.mono[i]) * audio.mono[i]; e_res += res[i] * res[i]; }
+  r.string_db = 10 * log10(e0 / std::max<size_t>(1, head) + 1e-30);
+  r.removed_db = 10 * log10(e_all / e_res);
+  return true;
+}
+
 }  // namespace analysis

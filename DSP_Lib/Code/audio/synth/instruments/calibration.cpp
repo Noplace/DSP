@@ -22,12 +22,17 @@
 #include "calibration.h"
 
 // File layout (little endian):
-//   "DSPCAL01".."DSPCAL03", u32 name length, name bytes, u32 note count, then per note:
+//   "DSPCAL01".."DSPCAL04", u32 name length, name bytes, u32 note count, then per note:
 //   i32 midi, f32 f0, f32 B, f32 b1, f32 b3, f32 peak, u32 rate, u32 n, f32[n] excitation
 //   version 2 adds: f32 after_b1, f32 after_b3, f32 after_level, f32 detune_cents,
 //                   u32 layer count, per layer: f32 velocity, f32 peak, u32 n, f32[n]
 //   version 3 adds partial decays (u32 count, per partial f32 t60, f32 after_t60, f32 after_level)
 //                   after each layer's samples, and for the note after its layers
+//   version 4 adds key-up sounds (u32 n, f32[n] release) after each layer's partial decays, and
+//                   for the note after its partial decays: f32 release_t60, f32 damper_delay,
+//                   u32 n, f32[n] release
+//   So a version 4 note reads: midi f0 B b1 b3 peak rate excitation | after_b1 after_b3 after_level
+//   detune layers{velocity peak samples partials release} | partials | release_t60 damper_delay release
 
 namespace dsp {
 namespace audio {
@@ -38,6 +43,7 @@ namespace {
 const char kMagic1[8] = {'D', 'S', 'P', 'C', 'A', 'L', '0', '1'};
 const char kMagic2[8] = {'D', 'S', 'P', 'C', 'A', 'L', '0', '2'};
 const char kMagic3[8] = {'D', 'S', 'P', 'C', 'A', 'L', '0', '3'};
+const char kMagic4[8] = {'D', 'S', 'P', 'C', 'A', 'L', '0', '4'};
 const uint32_t kMaxPartials = 256;
 }
 
@@ -54,7 +60,7 @@ bool StringCalibration::Save(const char* path) const {
     u32(uint32_t(v.size()));
     for (const PartialDecay& p : v) { f32(p.t60_s); f32(p.after_t60_s); f32(p.after_level); }
   };
-  fwrite(kMagic3, 1, 8, f);
+  fwrite(kMagic4, 1, 8, f);
   u32(uint32_t(name.size()));
   fwrite(name.data(), 1, name.size(), f);
   u32(uint32_t(notes.size()));
@@ -69,8 +75,11 @@ bool StringCalibration::Save(const char* path) const {
       f32(l.velocity); f32(l.peak);
       floats(l.samples);
       decays(l.partials);
+      floats(l.release);
     }
     decays(n.partials);
+    f32(n.release_t60_s); f32(n.damper_delay_s);
+    floats(n.release);
   }
   bool ok = ferror(f) == 0;
   fclose(f);
@@ -102,6 +111,7 @@ bool StringCalibration::Load(const char* file_path) {
   if (ok && !memcmp(magic, kMagic1, 8)) version = 1;
   if (ok && !memcmp(magic, kMagic2, 8)) version = 2;
   if (ok && !memcmp(magic, kMagic3, 8)) version = 3;
+  if (ok && !memcmp(magic, kMagic4, 8)) version = 4;
   ok = ok && version > 0;
   uint32_t len = 0, count = 0;
   read(&len, 4);
@@ -127,8 +137,13 @@ bool StringCalibration::Load(const char* file_path) {
         read(&l.velocity, 4); read(&l.peak, 4);
         read_floats(l.samples);
         if (version >= 3) read_decays(l.partials);
+        if (version >= 4) read_floats(l.release);
       }
       if (version >= 3) read_decays(n.partials);
+      if (version >= 4) {
+        read(&n.release_t60_s, 4); read(&n.damper_delay_s, 4);
+        read_floats(n.release);
+      }
     }
     notes.push_back(std::move(n));
   }

@@ -39,8 +39,14 @@ namespace instruments {
 //    two halves add up to the plain string at the onset.
 //  - optional second string: an identical one out of tune (honky-tonk), or, for calibrations
 //    without per-partial decays, a slightly detuned one with the measured aftersound decay
+//  - key-up (piano, calibrations with key-up recordings): the dampers touch the string the measured
+//    delay after key-up and stop it with the measured decay (both smoothed across the keyboard),
+//    and the recorded key-up sound (damper thump, key and hammer return) of the nearest recorded
+//    note plays once, transposed like the excitations and crossfaded by the note-on velocity.
+//    Strings without dampers (treble) ring on silently; so do notes the sustain pedal holds.
 struct CalibratedStringOptions {
-  real_t release_t60_s = 0.15f;   // decay after key-up (dampers)
+  real_t release_t60_s = 0.15f;   // decay after key-up (dampers) where the calibration has none
+  real_t release_level = 1.0f;    // key-up sound vs as recorded (0 = off)
   real_t level = 0.35f;           // output level for a typical note (loudest layer)
   real_t detune_cents = 0.0f;     // second string detune when the calibration has an aftersound
   real_t min_velocity_gain_db = -18.0f;  // velocities below the softest layer fade down to this
@@ -85,6 +91,12 @@ class CalibratedString : public InstrumentProcessor {
     float velocity;
     std::vector<float> samples;   // at the synth's sample rate, transposed to the note
   };
+  // Velocity crossfade between two layers (lo == hi when only one plays).
+  struct LayerMix {
+    size_t lo, hi;
+    float w_lo, w_hi;             // gains (below the softest layer w_lo < 1)
+    float t;                      // 0..1 from lo to hi
+  };
   static const int kMaxModalPartials = 24;
   static const int kMaxModes = 3 * kMaxModalPartials;  // first stage (x2 with a unison) + aftersound
   // Decay of each resonator partial for one velocity layer (rates in 1/s).
@@ -125,11 +137,24 @@ class CalibratedString : public InstrumentProcessor {
     const float (*hp)[5];
     float hp_s[2][2];
     int hp_run;                             // crossover samples left after the excitation ends
+    // Key-up: dampers pending, and the key-up sound (two velocity layers, read at rel_step).
+    float velocity;                         // note-on velocity, 0..1
+    int damp_wait;                          // samples until the dampers touch (0 = none pending)
+    bool rel_playing;
+    const float* rel_lo;
+    const float* rel_hi;
+    int rel_len;                            // the longer of the two
+    int rel_len_lo, rel_len_hi;
+    double rel_pos, rel_step;
+    float rel_w_lo, rel_w_hi;
   };
 
   void BuildTables();
+  void BuildReleases();
   void BuildModal(int m, const CalibratedNote& src);
   void StartModes(Voice& voice, int note, size_t lo, size_t hi, float t, double f0);
+  LayerMix MixLayers(const std::vector<Layer>& layers, float vel) const;
+  void Damp(Voice& voice);
 
   std::shared_ptr<const StringCalibration> cal_;
   CalibratedStringOptions options_;
@@ -142,6 +167,13 @@ class CalibratedString : public InstrumentProcessor {
   real_t b_detune_cents_;                      // second string vs the first
   float tuning_ratio_[128];                    // recorded tuning vs equal temperament (or 1)
   std::vector<Layer> layers_[128];             // per MIDI note, sorted by velocity
+  // Key-up sounds per recorded note that has them (at the synth's rate, untransposed); each MIDI
+  // note plays the nearest one at its pitch ratio.
+  std::vector<std::vector<Layer>> releases_;
+  int release_src_[128];                       // index into releases_, -1 = none
+  double release_step_[128];                   // playback rate (transposition)
+  float release_t60_[128];                     // damper decay
+  int damper_delay_[128];                      // key-up to the dampers touching, in samples
   Voice* voices_;
   float dc_coef_, level_decay_;
   InstrumentData* cdata_;
