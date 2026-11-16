@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include "../base.h"
 #include "../adsr.h"
 
@@ -71,6 +72,9 @@ class InstrumentProcessor : public Component {
   // Stereo position of a voice inside the channel (0 left .. 1 right), or < 0 to leave it in the
   // middle. A drum kit places each piece where it sits in the kit.
   virtual real_t VoicePan(int v) const { (void)v; return -1; }
+  // Which calibration file (measured from recordings) this instrument plays, with a short
+  // summary, or empty for a hand-set preset. Shown in the studio's instrument inspector.
+  virtual std::string CalibrationInfo() const { return std::string(); }
   // Pitch change on a sounding voice (pitch bend). Instruments that can't glide may ignore it.
   virtual void BendFrequency(real_t freq, int v) { SetFrequency(freq, v); }
 

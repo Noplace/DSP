@@ -77,6 +77,7 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="analysis.cpp" />
+    <ClCompile Include="drum_calibrate.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="analysis.h" />

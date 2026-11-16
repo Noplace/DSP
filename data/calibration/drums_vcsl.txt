@@ -1,0 +1,62 @@
+# Recipe for drums_vcsl.cal: which recorded hits play which GM drum note.
+# Build (from the repository root, recordings in reference\, see README.md):
+#   build\x64\Release\DSP_Render.exe drumcal data\calibration\drums_vcsl.txt data\calibration\drums_vcsl.cal
+#
+# note <midi> <residual_ms> <max_modes> <min_hz> <max_hz> <gain_db> <files...>
+#   residual_ms: how long the recorded residual (contact, wires, wash, room) plays before only
+#                the fitted modes ring on; max_modes 0 = residual only (claps, shakers)
+#   min_hz/max_hz: band searched for ringing modes (below min_hz is room rumble, not the drum)
+#   gain_db: level of the note's loudest take vs -20 dBFS (50 ms RMS) - the kit balance
+# derive <midi> <from_midi> <semitones> <gain_db>: plays another note's takes transposed
+name VCSL percussion (CC0)
+
+# Kick, snare, clap
+note 36  300  40   35  4000    4  reference/vcsl-bass-drum-1/BDrumNew_hit_*_Sum.wav
+derive 35 36 -2 0
+note 38  400  48  120  6000  1.5  reference/vcsl-snare-modern-1/Snare2_HitSN_*_Mid.wav
+derive 40 38 1.5 0
+note 37  200  24  200  6000   -9  reference/vcsl-snare-modern-1/Snare2_stick_*_Mid.wav
+note 39  250   0    0     0   -2  reference/vcsl-claps/Clap_rr*.wav
+
+# Toms: the high tom (~146 Hz) plays 48, the low tom (~92 Hz) 43; the others are transposed
+note 48  350  40   60  6000    1  reference/vcsl-tom-1-stick/TomH_HitS_*_Mid.wav
+note 43  350  40   50  6000    1  reference/vcsl-tom-2-stick/TomL_HitS_*_Mid.wav
+derive 50 48 2.4 0
+derive 47 48 -2.3 0
+derive 45 43 2.8 0
+derive 41 43 -3 0
+
+# Hi-hat (one pair: closed / pedal / open)
+note 42  350  96  200 16000   -5  reference/vcsl-hihat/HiHat_HitC_*_Mid.wav
+note 44  300  96  200 16000   -9  reference/vcsl-hihat/HiHat_Close_*_Mid.wav
+note 46 1500  96  200 16000   -3  reference/vcsl-hihat/HiHat_HitO_*_Mid.wav
+
+# Cymbals (suspended cymbals struck with sticks)
+note 49 2500 128  150 16000   -1  reference/vcsl-suspended-cymbal-1/susCymb1_hit_stick_*.wav
+note 57 2500 128  150 16000    0  reference/vcsl-suspended-cymbal-2/susCymb2_hit_stick_*.wav
+derive 55 49 5 -4
+derive 51 57 0 -6
+note 53 1500  64  300 16000   -2  reference/vcsl-suspended-cymbal-2/susCymb2_hit_bell_*.wav
+derive 59 51 -1.5 0
+
+# Hand percussion
+note 54  400  32  300 16000   -3  reference/vcsl-tambourine-1/Tamb1_Hit_*_Mid.wav
+note 56  300  16  300  8000   -5  reference/vcsl-cowbells/Cowbell1_Hit_*_Mid.wav
+note 60  300  16  150  6000   -5  reference/vcsl-bongos/BongoH_Hit1_*_Mid.wav
+note 61  300  16  120  6000   -5  reference/vcsl-bongos/BongoL_Hit1_*_Mid.wav
+note 62  200  16  100  6000   -5  reference/vcsl-conga/Quinto_HitFM1_*_Sum.wav
+note 63  300  16  100  6000   -5  reference/vcsl-conga/Quinto_HitN_*_Sum.wav
+note 64  300  16   60  6000   -5  reference/vcsl-conga/Tumba_HitN_*_Sum.wav
+note 67  400  12  300 10000   -5  reference/vcsl-agogo/Agogo_High_*_Mid.wav
+note 68  400  12  300 10000   -5  reference/vcsl-agogo/Agogo_Low_*_Mid.wav
+note 69  300   0    0     0   -3  reference/vcsl-cabasa/Cabasa1_Hit_*_Mid.wav
+note 70  250   0    0     0   -3  reference/vcsl-shaker-small/Mid_ShakerHighFaster_Down_*.wav
+note 73  300   8  300  8000   -5  reference/vcsl-guiro/Guiro_Hit_*_Mid.wav
+note 74  800   8  300  8000   -5  reference/vcsl-guiro/Guiro_Med_*_Mid.wav
+note 75  300   8  300 10000   -5  reference/vcsl-claves/Claves1_Hit_*_Mid.wav
+note 76  300  12  300 10000   -5  reference/vcsl-woodblock/wood_click_*.wav
+derive 77 76 -4 0
+note 80  300  24  300 16000   -6  reference/vcsl-triangles/Triangle1_HitM_*_Mid.wav
+note 81 2500  24  300 16000   -6  reference/vcsl-triangles/Triangle1_Hit_v*_Mid.wav
+note 82  300   0    0     0   -3  reference/vcsl-shaker-small/Mid_Shaker_Slap_*.wav
+note 83  600  32  300 16000   -4  reference/vcsl-sleigh-bells/Sleighbells_Hit_*_Mid.wav

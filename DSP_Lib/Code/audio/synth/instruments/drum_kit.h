@@ -71,20 +71,20 @@ class DrumKit : public InstrumentProcessor {
   static const char* PieceName(int note);
   int PieceModes(int note) const;
 
-  // Calibration: named parameters of a note's articulation or of the piece it plays (see
-  // ParamName). Changing a piece parameter rebuilds that piece. Files hold "note name value"
-  // lines (and "name <text>"); LoadCalibration applies them to this kit, before or after Load.
-  static int ParamCount();
-  static const char* ParamName(int i);
-  bool SetParam(int note, const char* name, float value);
-  bool GetParam(int note, const char* name, float* value) const;
+  // Recorded calibration (drum_calibration.h, built by DSP_Render drumcal): notes it covers play
+  // their recorded hits (modes on the piece's resonators + residual); the rest stay modelled.
+  // Can be called before or after Load.
   bool LoadCalibration(const char* path);
-  const std::string& calibration_name() const;
+  std::string CalibrationInfo() const override;
+  int CalibratedNotes() const;
+  bool NoteIsRecorded(int note) const;
   void Silence();  // stop every piece at once (tools)
 
   struct Impl;
 
  private:
+  void StrikeRecorded(int note, void* piece, const void* articulation, float velocity);
+
   Impl* impl_;
   InstrumentData* cdata_;
 };

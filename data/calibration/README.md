@@ -8,7 +8,7 @@ back to hand-set presets.
 |---|---|---|---|
 | `harpsichord_english.cal` | GM programs 7-8 (harpsichord, clavinet) | VCSL "Harpsichord, English" (Zuckermann kit harpsichord), Normal stop, 28 sustained notes A#1-E6 | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
 | `piano_steinway_b.cal` | GM programs 1-4 (grands; honky-tonk = same with detuned unisons) | VCSL "Grand Piano, Steinway B", sustain pedal up, close mic, 42 notes A#0-G#7 x 3 velocity layers | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
-| `drums_vcsl.cal` | GM drum kit (channel 10): snare, side stick, kick 35, closed / open / pedal hi-hat | VCSL "Snare Drum, Modern 1", "Bass Drum 1", "Hi-Hat Cymbal" (see Drum kit below) | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
+| `drums_vcsl.cal` | GM drum kit (channel 10): 41 of 61 notes from 125 recorded hits (modes + residual), built from `drums_vcsl.txt` | VCSL kick, snare, toms, hi-hat, suspended cymbals and hand percussion (see Drum kit below) | CC0 1.0 ([sgossner/VCSL](https://github.com/sgossner/VCSL)) |
 
 Piano specifics: string stiffness is fitted with Abel-Smith allpass dispersion filters (partials
 within ~1-3 cents of the recordings across the keyboard), every velocity layer has its own
@@ -48,56 +48,105 @@ Note: VCSL names notes with middle C = "C3"; the tools detect the octave from th
 
 ## Drum kit (GM channel 10)
 
-The kit (`instruments/drum_kit.*`) is physically modelled and works without calibration data.
-Each piece (kick, snare, toms, hi-hat, cymbals, hand percussion) is one physical object, and
-its GM notes are strokes on it: 42/44/46 on one hi-hat, 51/53 on one ride, 37/38/40 on one
-snare.
+`drums_vcsl.cal` is binary, like the piano's (`DrumCalibration` in `instruments/drum_calibration.h`,
+about 6 MB). It is built from 125 recorded hits and covers 41 of the kit's 61 notes. The other 20
+are physically modelled (`instruments/drum_kit.cpp`): timbales, china, vibraslap, whistles,
+cuica, surdo, bell tree, castanets and the GM2 extras 27-34.
 
-- Membranes use Bessel modes with air loading and a velocity-dependent contact pulse.
-  Tension-modulation pitch glide follows the head's energy.
-- The snare wires are noise gated by the snare-side head.
-- Cymbals are clouds of 170-230 modes with a noise-driven energy cascade.
+### What the file holds
 
-`drums_vcsl.cal` holds `note parameter value` lines that override the hand-set parameters
-(the names are the `kParams` table in `drum_kit.cpp`). `DSP_Render drumfit` fits them by
-coordinate descent on a profile distance: band energies in 5 bands x 5 time windows after the
-onset, the -20/-40 dB decay times and, for membranes, the pitch. Levels are not fitted; the kit
-balance lines at the end of the file are set by hand.
+Each recorded hit is decomposed the way the piano is (commuted synthesis):
 
-| Note | Fitted to | Band difference before / after (dB, held-out take) |
+- **Modes:** up to 16-128 per hit (`max_modes` in the recipe). These are the drum's ringing
+  partials. Each has its frequency, its T60 measured frame by frame, and its complex amplitude at
+  the hit, all fitted jointly by least squares to the tail.
+- **Residual:** the recording minus those modes, for its first 200-2500 ms, faded out at the end
+  and stored as 16-bit. This is everything that is not a clean ringing mode: the stick or beater
+  contact, the snare wires, the cymbal wash, the room.
+
+The kit plays the residual and starts the modes on its resonators from the same sample, which
+rebuilds the recorded hit. After the residual has faded, only the modes ring on. Because the modes
+are live resonators:
+
+- A re-strike adds to the vibration already ringing on the same drum.
+- A closed or pedal hi-hat damps the open hat's modes, and so does a muted conga or triangle.
+- Velocity scales a take smoothly between the recorded layers.
+- Round robins alternate between takes, never the same one twice in a row.
+
+### How notes are matched to recordings
+
+The recipe `drums_vcsl.txt` (text, committed) lists the recordings for each note. Notes are
+either recorded or derived:
+
+- **Recorded:** 36 kick, 38 snare, 37 side stick, 39 clap, 48 and 43 toms, 42/44/46 hi-hat,
+  49 and 57 crashes, 53 ride bell, and the hand percussion.
+- **Derived:** played from a recorded note, transposed, on their own drum.
+  - 35 is the kick 2 semitones down.
+  - 40 is the snare 1.5 semitones up.
+  - 50/47/45/41 come from the two recorded toms, within +-3 semitones.
+  - 55 splash is crash 1 up 5 semitones.
+  - 51/59 ride is crash 2's stick hits.
+  - 77 is the wood block down 4 semitones.
+
+The builder sets each take's velocity from its level, using the kit's loudness curve. It also
+scales each note to the level the recipe gives it, which is the kit balance.
+
+Some checks show the fit is sound. The fitted modes cannot ring louder than the recording later
+in the tail: too-long decays are shortened window by window. Modes more than 50 dB below a take's
+strongest are dropped. Below `min_hz` the builder doesn't look for modes, so room rumble stays in
+the residual.
+
+### Before and after
+
+Synth versus recording, average band difference over 5 bands x 5 time windows (`drumcompare`):
+
+| Note | Hand-set model | Calibrated |
 |---|---|---|
-| 38 snare | Snare Drum, Modern 1: snares on, layers v9 / v7 / v6 at velocity 120 / 80 / 45 | 6.3 / 3.3 (f), 7.5 / 3.8 (mp) |
-| 37 side stick | Snare Drum, Modern 1: `stick` | 11.9 / 6.9 |
-| 35 kick | Bass Drum 1: v7 / v5 at 120 / 85, without pitch (the low end is too noisy for it) | 7.0 / 5.4 |
-| 42 closed hi-hat | Hi-Hat Cymbal: `HitC` v4 / v3 / v2 at 118 / 78 / 35 | 14.2 / 3.5 (f), 14.8 / 2.9 (p) |
-| 46 open hi-hat | Hi-Hat Cymbal: `HitO` at 105 | 11.1 / 2.4 |
-| 44 pedal hi-hat | Hi-Hat Cymbal: `Close` at 80 | 18.8 / 3.6 |
+| snare | 6.3 dB | 0.4 dB |
+| kick | 7.0 dB | 0.7 dB |
+| closed / open / pedal hi-hat | 14.2 / 11.1 / 18.8 dB | 0.1 / 0.0 / 2.2 dB |
 
-Velocities were chosen so that the synth's level steps match the recorded layers. The rest of
-the kit stays hand-tuned:
+The decay times now match the recordings: kick -40 dB at 0.78 s vs 0.69 s recorded, open hat
+1.28 s vs 1.38 s. The calibrated numbers compare against the hits the file was built from. Where
+the synth differs is after the residual has faded and between velocity layers.
 
-- Toms: the VCSL tom folders only hold quiet rim strokes at the top level.
-- Crash, ride, splash and china: VCSL has orchestral clash and suspended cymbals, not kit
-  cymbals.
-- Room: the recordings include room sound, so their tails (kick, snare) are longer than the
-  dry model's.
+### Recordings
 
-The recordings are git-ignored, under `reference/vcsl-snare-modern-1`, `reference/vcsl-bass-drum-1`,
-`reference/vcsl-hihat`, `reference/vcsl-tom-1` and `reference/vcsl-tom-2`. They come from
-`Membranophones/Struck Membranophones/...` and `Idiophones/Struck Idiophones/Hi-Hat Cymbal`.
+The recordings are git-ignored and live under `reference/vcsl-*`. They come from VCSL (CC0):
 
-To refit a note, run `drumfit` with the parameters to fit and `recording@velocity` pairs. It
-starts from the values already in the file and replaces only those lines:
+- `Membranophones/Struck Membranophones/`: Bass Drum 1; Snare Drum, Modern 1; Tom 1/Stick;
+  Tom 2/Stick; Conga; Bongos.
+- `Idiophones/Struck Idiophones/`: Hi-Hat Cymbal; Suspended Cymbal 1 and 2 (stick and bell hits
+  only); Tambourine 1; Cowbells; Agogo Bells; Claves; Woodblock; Claps; Cabasa; Shaker, Small;
+  Sleigh Bells; Guiro; Triangles.
+
+Only single hits were downloaded, no rolls, shakes or bowed files. The cymbals are orchestral
+suspended cymbals played with sticks; VCSL has no kit crash or ride.
+
+### Rebuilding and checking
+
+Rebuild the calibration:
 
 ```bash
-build\x64\Release\DSP_Render.exe drumfit data\calibration\drums_vcsl.cal 42 peak_lo,peak_hi,t60_lo,t60_hi,damp reference\vcsl-hihat\HiHat_HitC_v4_rr1_Mid.wav@118 reference\vcsl-hihat\HiHat_HitC_v3_rr1_Mid.wav@78
+build\x64\Release\DSP_Render.exe drumcal data\calibration\drums_vcsl.txt data\calibration\drums_vcsl.cal
 ```
 
-Compare a drum note with a recording (band energies and centroid over time, side by side, plus
-an A/B WAV):
+List what the file holds for a note:
+
+```bash
+build\x64\Release\DSP_Render.exe drumcalinfo data\calibration\drums_vcsl.cal 38
+```
+
+Compare a note with a recording and write an A/B WAV:
 
 ```bash
 build\x64\Release\DSP_Render.exe drumcompare 38 reference\vcsl-snare-modern-1\Snare2_HitSN_v9_rr2_Mid.wav build\samples\ab_snare.wav 120
+```
+
+Show which calibrations the synth found:
+
+```bash
+build\x64\Release\DSP_Render.exe info
 ```
 
 Other tools:
@@ -105,4 +154,8 @@ Other tools:
 - `drum <note> [velocity]`: profile and envelope of one note.
 - `drums [rate] [dir] [velocity] [first] [last]`: level and decay table, with optional WAVs.
 - `drumgroove <out.wav>`: a test performance.
-- `drumcpu`: CPU cost per drum voice.
+- `drumcpu`: CPU per drum voice.
+
+The studio's channel inspector shows a CALIBRATED badge next to the instrument when it plays a
+calibration file. The badge's tooltip names the file. Instruments without a calibration file
+show PRESET.

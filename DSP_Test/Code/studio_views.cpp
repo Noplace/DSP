@@ -902,6 +902,20 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
     }
     g.Text(inst, inst_r.Inset(8, 0), fixed ? Rgb(0x0d0f13) : theme::kText, 11, Align::kLeft, fixed);
     if (ui_.Hover(inst_r)) ui_.Tooltip("Choose the instrument for this channel", inst_r.cx(), inst_r.y);
+    // Calibration badge: is this instrument playing a calibration file measured from recordings?
+    const std::string cal = midi_synth_->ChannelCalibration(sel);
+    const char* badge = cal.empty() ? "PRESET" : "CALIBRATED";
+    const Rect cal_r(inst_r.r() + 8, inst_r.y + 2, g.TextWidth(badge, 9.5f, true) + 14, 16);
+    if (cal_r.r() < head.r() - 8) {
+      const Color cal_color = cal.empty() ? theme::kFaint : theme::kGreen;
+      g.FillRound(cal_r, 3, WithAlpha(cal_color, cal.empty() ? 0.18f : 0.85f));
+      g.Text(badge, cal_r, cal.empty() ? theme::kDim : Rgb(0x0d0f13), 9.5f, Align::kCenter, true);
+      if (ui_.Hover(cal_r)) {
+        const std::string tip = cal.empty() ? std::string("Hand-set model: no calibration file for this instrument")
+                                            : "Plays " + cal;
+        ui_.Tooltip(tip.c_str(), cal_r.cx(), cal_r.y);
+      }
+    }
   } else {
     snprintf(title, sizeof(title), "Master bus");
     g.Text("FX returns \xE2\x86\x92 EQ \xE2\x86\x92 bus compressor \xE2\x86\x92 width \xE2\x86\x92 output \xE2\x86\x92 limiter",

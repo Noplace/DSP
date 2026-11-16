@@ -75,6 +75,7 @@
 #include "audio/synth/instruments/karplusstrong.h"
 #include "audio/synth/instruments/waveguide_string.h"
 #include "audio/synth/instruments/modal.h"
+#include "audio/synth/instruments/drum_calibration.h"
 #include "audio/synth/instruments/drum_kit.h"
 #include "audio/synth/instruments/string_loop.h"
 #include "audio/synth/instruments/calibration.h"

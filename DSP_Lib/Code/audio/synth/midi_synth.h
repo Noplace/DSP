@@ -90,6 +90,13 @@ class MidiSynth : public Synth {
   int program_override() const { return program_override_; }
   // Names of the calibrated instruments in use (empty if none were found).
   const std::vector<std::string>& calibrated_instruments() const { return calibrated_instruments_; }
+  // Calibration file a channel's instrument plays and a summary of it, or "" for a hand-set
+  // preset (each calibrated instrument reports its own file: see InstrumentProcessor).
+  std::string ChannelCalibration(int channel) const {
+    const int program = channel_program(channel);
+    const instruments::InstrumentProcessor* inst = program >= 128 ? drum_kit_ : instr[program & 127];
+    return inst ? inst->CalibrationInfo() : std::string();
+  }
 
   void Seek(double ms) override;
   // The song being played. Changed only through LoadMidi / InstallSong (with the audio thread

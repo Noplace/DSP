@@ -71,6 +71,14 @@ class CalibratedString : public InstrumentProcessor {
 
   // Smoothed parameters for a MIDI note (for tools/inspection).
   LoopParams NoteParams(int midi_note) const;
+  // "piano_steinway_b.cal: <name>, 42 recorded notes, 126 takes"
+  std::string CalibrationInfo() const override {
+    const size_t slash = cal_->path.find_last_of("\\/");
+    size_t takes = 0;
+    for (const CalibratedNote& n : cal_->notes) takes += n.layers.empty() ? 1 : n.layers.size();
+    return cal_->path.substr(slash == std::string::npos ? 0 : slash + 1) + ": " + cal_->name + ", " +
+           std::to_string(cal_->notes.size()) + " recorded notes, " + std::to_string(takes) + " takes";
+  }
 
  private:
   struct Layer {

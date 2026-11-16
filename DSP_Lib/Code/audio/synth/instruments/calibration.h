@@ -67,6 +67,7 @@ struct CalibratedNote {
 // A calibrated string instrument: one entry per recorded note, sorted by MIDI note.
 struct StringCalibration {
   std::string name;
+  std::string path;  // file it was loaded from (set by Load)
   std::vector<CalibratedNote> notes;
 
   bool Save(const char* path) const;

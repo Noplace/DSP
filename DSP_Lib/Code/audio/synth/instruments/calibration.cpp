@@ -77,9 +77,9 @@ bool StringCalibration::Save(const char* path) const {
   return ok;
 }
 
-bool StringCalibration::Load(const char* path) {
+bool StringCalibration::Load(const char* file_path) {
   FILE* f = nullptr;
-  if (fopen_s(&f, path, "rb") != 0 || !f) return false;
+  if (fopen_s(&f, file_path, "rb") != 0 || !f) return false;
   bool ok = true;
   auto read = [&](void* p, size_t bytes) { if (ok && fread(p, 1, bytes, f) != bytes) ok = false; };
   auto read_floats = [&](std::vector<float>& v) {
@@ -133,6 +133,7 @@ bool StringCalibration::Load(const char* path) {
     notes.push_back(std::move(n));
   }
   fclose(f);
+  if (ok) path = file_path;
   if (ok)
     std::sort(notes.begin(), notes.end(),
               [](const CalibratedNote& a, const CalibratedNote& b) { return a.midi_note < b.midi_note; });

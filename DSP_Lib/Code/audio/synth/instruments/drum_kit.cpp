@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <vector>
 #include <emmintrin.h>
 #include "../../../dsp.h"
@@ -217,29 +218,31 @@ struct KitTable {
       a.pos = 0.12f; a.pos_jitter = 0.04f; a.contact_ms = 3.2f; a.contact_exp = 0.35f;
       Click(a, 1.0f, 3300, 0.8f, 7);
 
-      PieceDef kick2 = Drum("Kick 24\"", 0.5f, 1.15f, 49, 1.05f, 0.25f, 6.0f, 0.7f, 1.0f, 90, 0.5f, 0.004f, 0.3f);
+      // Values from fitting VCSL "Bass Drum 1" (DSP_Render drumcompare); used when no calibration file is found.
+      PieceDef kick2 = Drum("Kick 24\"", 0.5f, 1.15f, 69.3f, 1.05f, 0.25f, 3.0f, 0.59f, 1.0f, 180, 0.5f, 0.004f, 0.3f);
       Reso(kick2, 1.05f, 0.55f, 0.5f);
       int k2 = Add(kick2);
       Articulation& b = Set(35, Stroke("Acoustic Bass Drum", k2));
       b.pos = 0.15f; b.contact_ms = 4.0f; b.contact_exp = 0.35f;
-      Click(b, 0.35f, 2600, 0.8f, 8);
+      Click(b, 0.35f, 2600, 0.48f, 8);
     }
 
     // ---- Snare: 14" x 5.5", coated batter, thin snare-side head with wires -------------------
     {
-      PieceDef snare = Drum("Snare 14\"", 0.48f, 0.95f, 192, 0.5f, 0.2f, 9.0f, 0.5f, 0.6f, 380, 0.3f, 0.003f, 0.05f);
-      Reso(snare, 1.62f, 0.5f, 0.35f);
-      snare.wires = {9.0f, 0.004f, 900, 10000, 12};
+      // Values from fitting VCSL "Snare Drum, Modern 1" (snares on); used when no calibration file is found.
+      PieceDef snare = Drum("Snare 14\"", 0.48f, 0.95f, 157, 0.5f, 0.2f, 9.0f, 0.64f, 0.23f, 380, 0.24f, 0.003f, 0.04f);
+      Reso(snare, 1.62f, 0.64f, 0.35f);
+      snare.wires = {2.7f, 0.00003f, 435, 6150, 51};
       int s = Add(snare);
       Articulation& hit = Set(38, Stroke("Acoustic Snare", s));
-      hit.pos = 0.35f; hit.pos_jitter = 0.07f; hit.contact_ms = 0.5f;
-      Click(hit, 0.4f, 4600, 0.7f, 5);
+      hit.pos = 0.35f; hit.pos_jitter = 0.07f; hit.contact_ms = 0.64f; hit.contact_exp = 0.16f; hit.gain = 1.25f;
+      Click(hit, 0.19f, 4600, 0.7f, 5);
       Articulation& rim = Set(40, Stroke("Electric Snare", s));  // played as a rim shot
       rim.pos = 0.88f; rim.pos_jitter = 0.03f; rim.contact_ms = 0.3f; rim.gain = 1.6f;
       Click(rim, 1.5f, 2300, 1.3f, 14);
       Articulation& side = Set(37, Stroke("Side Stick", s));     // cross stick: wood on rim
-      side.pos = 0.85f; side.drive = 0.12f; side.contact_ms = 0.4f; side.wires = 0.3f;
-      Click(side, 1.6f, 1750, 5.0f, 45);
+      side.pos = 1.0f; side.drive = 0.24f; side.contact_ms = 1.6f; side.wires = 3.4f;
+      Click(side, 1.6f, 2080, 3.5f, 53);
     }
 
     // ---- Hand clap: a few bursts a few ms apart plus the room ----------------------------------
@@ -272,19 +275,21 @@ struct KitTable {
 
     // ---- Hi-hat: one pair of 14" cymbals; the stroke sets how tightly they are held ----------
     {
-      PieceDef hat = Cymbal("Hi-Hat 14\"", 0.34f, 1.25f, 380, 17500, 168, 11, 3800, 12500, 0.6f, 2.4f, 0.9f,
+      // Values from fitting VCSL "Hi-Hat Cymbal"; used when no calibration file is found.
+      PieceDef hat = Cymbal("Hi-Hat 14\"", 0.34f, 1.25f, 380, 17500, 168, 11, 950, 25000, 2.4f, 4.8f, 1.8f,
                             0.6f, 3500, 3, 0.4f);
       int h = Add(hat);
       Articulation& closed = Set(42, Stroke("Closed Hi-Hat", h));
-      closed.pos = 0; closed.pos_jitter = 0.02f; closed.contact_ms = 0.12f; closed.damp = 0.08f; closed.cascade = 0.6f;
-      Click(closed, 0.45f, 8500, 0.7f, 6);
+      closed.pos = 0; closed.pos_jitter = 0.02f; closed.contact_ms = 0.06f; closed.contact_exp = 0.07f; closed.damp = 0.16f;
+      closed.cascade = 1.2f;
+      Click(closed, 0.23f, 18000, 0.7f, 17);
       Articulation& pedal = Set(44, Stroke("Pedal Hi-Hat", h));  // the two cymbals clap shut
-      pedal.pos = 0; pedal.contact_ms = 1.1f; pedal.drive = 1.6f; pedal.damp = 0.06f; pedal.cascade = 0.4f;
-      pedal.gain = 1.5f;
-      Click(pedal, 1.4f, 2600, 0.8f, 9);
+      pedal.pos = 0; pedal.contact_ms = 0.28f; pedal.drive = 0.8f; pedal.damp = 0.12f; pedal.cascade = 6.4f;
+      pedal.gain = 1.1f;
+      Click(pedal, 5.6f, 6180, 1.6f, 4.5f);
       Articulation& open = Set(46, Stroke("Open Hi-Hat", h));
-      open.pos = 0; open.contact_ms = 0.14f; open.damp = 0.8f; open.cascade = 1.4f;
-      Click(open, 0.4f, 8000, 0.7f, 6);
+      open.pos = 0; open.contact_ms = 0.07f; open.damp = 1.13f; open.cascade = 2.0f;
+      Click(open, 2.3f, 354, 0.7f, 3);
     }
 
     // ---- Cymbals ---------------------------------------------------------------------------------
@@ -368,7 +373,7 @@ struct KitTable {
       const struct { int note; const char* name; float f, pan; } timbales[] = {
           {65, "High Timbale", 365, 0.4f}, {66, "Low Timbale", 262, 0.45f}};
       for (auto& tb : timbales) {
-        PieceDef t = Drum(tb.name, tb.pan, 0.8f, tb.f, 0.3f, 0.3f, 6.0f, 0.7f, 0.7f, 4 * tb.f, 0.3f, 0.004f, 0.02f);
+        PieceDef t = Drum(tb.name, tb.pan, 0.65f, tb.f, 0.3f, 0.3f, 6.0f, 0.7f, 0.7f, 4 * tb.f, 0.3f, 0.004f, 0.02f);
         Reso(t, 2.7f, 0.5f, 0.5f);  // the steel shell rings
         Articulation& h = Set(tb.note, Stroke(tb.name, Add(t)));
         h.pos = 0.6f; h.contact_ms = 0.4f;
@@ -397,7 +402,7 @@ struct KitTable {
       Articulation& m = Set(82, Stroke("Shaker", Add(shaker)));
       m.drive = 0.2f;
 
-      PieceDef whistle = MakePiece("Whistle", kNoBody, 0.5f, 0.6f);
+      PieceDef whistle = MakePiece("Whistle", kNoBody, 0.5f, 0.27f);
       Tone(whistle, 1.0f, 2650, 0.1f, 0.02f, 0.03f, 20, 28, 0.025f, 8, 90, 0.05f);
       Noise(whistle, 0.08f, 2650, 2.0f, 0.15f);
       int w = Add(whistle);
@@ -427,7 +432,7 @@ struct KitTable {
       pq.contact_ms = 0.25f;
       Click(pq, 0.25f, 2500, 0.7f, 3);
 
-      PieceDef cuica = MakePiece("Cuica", kNoBody, 0.55f, 0.6f);
+      PieceDef cuica = MakePiece("Cuica", kNoBody, 0.55f, 0.27f);
       Tone(cuica, 1.0f, 520, 0.35f, 0.15f, 0.4f, 60, 0, 0, 10, 60, 0.08f);
       int cu = Add(cuica);
       Articulation& mc = Set(78, Stroke("Mute Cuica", cu));
@@ -605,6 +610,14 @@ struct Piece {
   // tone
   float tone_amp = 0, tone_phase = 0, tone_warble = 0, tone_pitch = 1, tone_hold = 0;
   int tone_t = -1;
+
+  // ---- calibrated playback (drum_calibration.h): recorded modes + residual ----
+  bool calibrated = false;
+  struct Pending { const DrumCalTake* take; float gain, rate, step; bool choke; };  // rate: transposition; step: residual samples per output sample
+  Pending pending[4];
+  int pending_count = 0;
+  struct Residual { const DrumCalTake* take = nullptr; double pos = 0; float rate = 1, gain = 0, fade = 1, fade_coef = 1; };
+  Residual res[8];
 
   float Random() {  // xorshift32, [-1, 1)
     seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
@@ -850,7 +863,13 @@ float Energy(const Bank& b) {
   return _mm_cvtss_f32(e);
 }
 
+void RenderCalibrated(Piece& p);
+
 void RenderPiece(Piece& p) {
+  if (p.calibrated) {
+    RenderCalibrated(p);
+    return;
+  }
   const PieceDef& d = *p.def;
   const float sr = float(p.sr);
   alignas(16) float x[kBlock], xc[kBlock], out[kBlock], yb[kBlock];
@@ -1002,6 +1021,8 @@ void ResetPiece(Piece& p) {
   p.wire_gate = p.wire_ring = 0;
   p.rat_energy = 0;
   p.tone_t = -1;
+  p.pending_count = 0;
+  for (auto& r : p.res) r = Piece::Residual();
   p.click_bq.Reset(); p.noise_bq.Reset(); p.noise_hp.Reset(); p.wire_hp.Reset(); p.wire_lp.Reset();
   if (p.glide_mult != 1) {
     p.glide_mult = 1;
@@ -1153,43 +1174,158 @@ void InitPiece(Piece& p, const PieceDef& d, double sr, uint32_t seed) {
   ResetPiece(p);
 }
 
-// Calibratable parameters: float fields of the piece definition or of the articulation.
-struct ParamInfo { const char* name; bool piece; size_t offset; };
-#define PP(name, field) {name, true, offsetof(PieceDef, field)}
-#define PA(name, field) {name, false, offsetof(Articulation, field)}
-const ParamInfo kParams[] = {
-    PP("f01", mem.f01), PP("air", mem.air), PP("cavity", mem.cavity), PP("max_ratio", mem.max_ratio),
-    PP("t60", mem.t60), PP("t60_axisym", mem.t60_axisym), PP("damp_hz", mem.damp_hz), PP("tilt", mem.tilt),
-    PP("split", mem.split), PP("glide", mem.glide), PP("reso_ratio", mem.reso_ratio), PP("reso_gain", mem.reso_gain),
-    PP("reso_t60", mem.reso_t60),
-    PP("f_lo", metal.f_lo), PP("f_hi", metal.f_hi), PP("peak_lo", metal.peak_lo), PP("peak_hi", metal.peak_hi),
-    PP("spread", metal.spread), PP("t60_lo", metal.t60_lo), PP("t60_hi", metal.t60_hi), PP("cascade", metal.cascade),
-    PP("cascade_hz", metal.cascade_hz), PP("cascade_attack_ms", metal.cascade_attack_ms),
-    PP("cascade_t60", metal.cascade_t60), PP("bell_hz", metal.bell_hz), PP("bell_t60", metal.bell_t60),
-    PP("noise_amount", noise.amount), PP("noise_hz", noise.hz), PP("noise_q", noise.q), PP("noise_t60", noise.t60),
-    PP("wire_amount", wires.amount), PP("wire_threshold", wires.threshold), PP("wire_hp_hz", wires.hp_hz),
-    PP("wire_lp_hz", wires.lp_hz), PP("wire_ring_ms", wires.ring_ms),
-    PP("piece_gain", gain), PP("pan", pan),
-    PA("pos", pos), PA("pos_jitter", pos_jitter), PA("contact_ms", contact_ms), PA("contact_exp", contact_exp),
-    PA("drive", drive), PA("click", click), PA("click_hz", click_hz), PA("click_q", click_q), PA("click_ms", click_ms),
-    PA("art_noise", noise), PA("art_wires", wires), PA("art_cascade", cascade), PA("damp", damp), PA("art_gain", gain),
-};
-#undef PP
-#undef PA
-const int kParamCount = int(sizeof(kParams) / sizeof(kParams[0]));
+// ---- Calibrated pieces: recorded takes on mode slots --------------------------------------
+// The bank holds free mode slots. A take's modes go into the slot ringing at the same frequency
+// (a re-strike of the same drum adds to its vibration and takes over its current damping), else a
+// silent slot, else the weakest one.
+
+void InitCalibratedPiece(Piece& p, int slots) {
+  p.bank.Free();
+  p.bank.Allocate(std::min(256, std::max(8, slots)));
+  p.calibrated = true;
+  p.glide_kappa = 0;
+  p.out_gain = 1;  // levels come from the calibration
+}
+
+void SetSlot(Bank& b, int k, float w, float t60, double sr) {
+  const float r = float(exp(-kLn1000 / (std::max(0.003f, t60) * sr)));
+  b.w[k] = w;
+  b.t60[k] = t60;
+  b.r[k] = r;
+  b.cw[k] = cosf(w);
+  b.sw[k] = sinf(w);
+  b.c[k] = r * b.cw[k];
+  b.s[k] = r * b.sw[k];
+}
+
+void InjectTake(Piece& p, const Piece::Pending& q) {
+  Bank& b = p.bank;
+  const double sr = p.sr;
+  const float tiny = 1e-7f;
+  if (q.choke) {  // closing the hi-hat, palm on the conga: what still rings is damped hard
+    for (int k = 0; k < b.count; ++k)
+      if (b.t60[k] > 0.06f) SetSlot(b, k, b.w[k], 0.06f, sr);
+    for (auto& r : p.res)
+      if (r.take) r.fade_coef = std::min(r.fade_coef, float(exp(-1.0 / (0.012 * sr))));
+  }
+  const float nyquist_w = float(kPi * 0.9);
+  bool used[256] = {};  // slots this take already wrote: its own modes never merge
+  for (const DrumCalMode& m : q.take->modes) {
+    const float w = float(2 * kPi * m.freq_hz * q.rate / sr);
+    if (w >= nyquist_w) continue;
+    const float t60 = m.t60_s / q.rate;
+    int best = -1;
+    float best_diff = 0.002f * w;  // same mode of the same drum, still ringing from an earlier stroke
+    for (int k = 0; k < b.count; ++k) {
+      const float diff = fabsf(b.w[k] - w);
+      if (!used[k] && diff < best_diff && fabsf(b.re[k]) + fabsf(b.im[k]) > tiny) { best_diff = diff; best = k; }
+    }
+    if (best >= 0) {
+      SetSlot(b, best, b.w[best], t60, sr);  // the newest stroke sets the damping
+    } else {
+      float weakest = 1e30f;
+      for (int k = 0; k < b.count; ++k) {
+        if (used[k]) continue;
+        const float a = fabsf(b.re[k]) + fabsf(b.im[k]);
+        if (a < weakest) { weakest = a; best = k; }
+        if (a <= tiny) break;
+      }
+      if (best < 0) break;  // more modes than slots
+      b.re[best] = b.im[best] = 0;
+      SetSlot(b, best, w, t60, sr);
+    }
+    used[best] = true;
+    b.re[best] += m.re * q.gain;
+    b.im[best] += m.im * q.gain;
+  }
+  // Residual: a free player, else the one furthest through its take (quietest by then).
+  Piece::Residual* r = &p.res[0];
+  for (auto& c : p.res) {
+    if (!c.take) { r = &c; break; }
+    if (c.pos > r->pos) r = &c;
+  }
+  r->take = q.take;
+  r->pos = 0;
+  r->rate = q.step;
+  r->gain = q.gain * q.take->residual_scale;
+  r->fade = 1;
+  r->fade_coef = 1;
+}
+
+void RenderCalibrated(Piece& p) {
+  alignas(16) float out[kBlock], unused[kBlock];
+  for (int i = 0; i < p.pending_count; ++i) InjectTake(p, p.pending[i]);
+  p.pending_count = 0;
+  RenderModes<false, false>(p.bank, nullptr, nullptr, out, unused);
+  bool busy = false;
+  for (auto& r : p.res) {
+    if (!r.take) continue;
+    const std::vector<int16_t>& x = r.take->residual;
+    const double last = double(x.size()) - 1.0;
+    for (int i = 0; i < kBlock && r.pos < last; ++i) {
+      const int idx = int(r.pos);
+      const float frac = float(r.pos - idx);
+      out[i] += (x[idx] + (x[idx + 1] - x[idx]) * frac) * r.gain * r.fade;
+      r.fade *= r.fade_coef;
+      r.pos += r.rate;
+    }
+    if (r.pos >= last || r.fade < 1e-4f) r.take = nullptr;
+    else busy = true;
+  }
+  float peak = 0;
+  for (int i = 0; i < kBlock; ++i) {
+    p.buf[i] = out[i] * p.out_gain;
+    peak = std::max(peak, fabsf(p.buf[i]));
+  }
+  p.level = std::max(peak, p.level * 0.97f);
+  if (!busy && p.level < 3e-6f) p.active = false;
+}
+
+// A stroke from the recordings: the take nearest the velocity (round robin among takes of about
+// the same level, never the same one twice in a row), scaled to the exact velocity. It starts at
+// the next block so the residual and the modes begin on the same sample.
+void StrikeRecordedTake(Piece& p, const DrumCalNote& src, float semitones, float gain, const Articulation& a,
+                        float velocity, int& last_take) {
+  const float vel = std::clamp(velocity, 0.02f, 1.0f);
+  float nearest = 1e9f;
+  for (const DrumCalTake& t : src.takes) nearest = std::min(nearest, fabsf(t.velocity - vel));
+  int candidates[64], count = 0;
+  for (int i = 0; i < int(src.takes.size()) && count < 64; ++i)
+    if (fabsf(src.takes[i].velocity - vel) <= nearest + 0.06f) candidates[count++] = i;
+  int pick = candidates[0];
+  if (count > 1) {
+    pick = candidates[int(p.Random01() * count) % count];
+    if (pick == last_take) pick = candidates[(std::find(candidates, candidates + count, pick) - candidates + 1) % count];
+  }
+  last_take = pick;
+  const DrumCalTake& take = src.takes[pick];
+  const float ratio = std::clamp(vel / std::max(0.02f, take.velocity), 0.25f, 4.0f);
+  Piece::Pending q;
+  q.take = &take;
+  q.gain = gain * a.gain * powf(ratio, 1.6f);
+  q.rate = powf(2.0f, semitones / 12.0f);
+  q.step = q.rate * float(src.rate) / float(p.sr);
+  q.choke = a.damp < 0.5f;
+  if (p.pending_count < 4) p.pending[p.pending_count++] = q;
+}
 
 }  // namespace
 
 // ============================================================================================
 
 struct DrumKit::Impl {
-  KitTable kit = Kit();  // this kit's own copy: calibration changes it
-  std::string cal_name;
+  KitTable kit = Kit();
+  std::shared_ptr<const DrumCalibration> cal;
+  // Per note: the calibrated note it plays (itself, or another stroke on the same piece), or -1.
+  int cal_note[kNoteCount];
+  int last_take[kNoteCount];
   std::vector<Piece> pieces;
   struct Slot { int piece = -1; bool active = false; } voices[Polyphony];
 };
 
-DrumKit::DrumKit() : InstrumentProcessor(), impl_(new Impl()), cdata_(nullptr) {}
+DrumKit::DrumKit() : InstrumentProcessor(), impl_(new Impl()), cdata_(nullptr) {
+  for (int i = 0; i < kNoteCount; ++i) impl_->cal_note[i] = impl_->last_take[i] = -1;
+}
 
 DrumKit::~DrumKit() {
   Unload();
@@ -1204,6 +1340,32 @@ int DrumKit::Load() {
   impl_->pieces.resize(kit.pieces.size());  // never resized while loaded: banks point into their own memory
   for (size_t i = 0; i < kit.pieces.size(); ++i)
     InitPiece(impl_->pieces[i], kit.pieces[i], double(sample_rate_), uint32_t(0x1234 + 977 * i));
+  // Pieces with recorded takes get mode slots for the most modes any of their takes has, twice
+  // over (a re-strike with another take needs room while the first still rings).
+  for (int i = 0; i < kNoteCount; ++i) impl_->cal_note[i] = -1;
+  if (impl_->cal) {
+    std::vector<int> slots(kit.pieces.size(), 0);
+    float semitones, gain;
+    for (int n = kFirstNote; n <= kLastNote; ++n) {
+      const int piece = kit.notes[n - kFirstNote].piece;
+      const DrumCalNote* src = piece >= 0 ? impl_->cal->Source(n, &semitones, &gain) : nullptr;
+      if (!src) continue;
+      impl_->cal_note[n - kFirstNote] = n;
+      for (const DrumCalTake& t : src->takes) slots[piece] = std::max(slots[piece], int(t.modes.size()) * 2 + 8);
+    }
+    for (size_t i = 0; i < slots.size(); ++i)
+      if (slots[i] > 0) InitCalibratedPiece(impl_->pieces[i], slots[i]);
+    // Strokes without their own recording on a calibrated piece play one of its recorded strokes.
+    for (int n = kFirstNote; n <= kLastNote; ++n) {
+      const int piece = kit.notes[n - kFirstNote].piece;
+      if (piece < 0 || slots[piece] == 0 || impl_->cal_note[n - kFirstNote] >= 0) continue;
+      for (int m = kFirstNote; m <= kLastNote; ++m)
+        if (kit.notes[m - kFirstNote].piece == piece && impl_->cal_note[m - kFirstNote] == m) {
+          impl_->cal_note[n - kFirstNote] = m;
+          break;
+        }
+    }
+  }
   for (auto& s : impl_->voices) s = Impl::Slot();
   loaded_ = true;
   return S_OK;
@@ -1218,64 +1380,44 @@ int DrumKit::Unload() {
   return S_OK;
 }
 
-int DrumKit::ParamCount() { return kParamCount; }
-const char* DrumKit::ParamName(int i) { return i >= 0 && i < kParamCount ? kParams[i].name : nullptr; }
-
-static float* ParamField(DrumKit::Impl* impl, int note, const char* name, int* piece_out) {
-  if (note < kFirstNote || note > kLastNote) return nullptr;
-  Articulation& a = impl->kit.notes[note - kFirstNote];
-  if (a.piece < 0) return nullptr;
-  for (const ParamInfo& p : kParams) {
-    if (strcmp(p.name, name)) continue;
-    *piece_out = p.piece ? a.piece : -1;
-    char* base = p.piece ? reinterpret_cast<char*>(&impl->kit.pieces[a.piece]) : reinterpret_cast<char*>(&a);
-    return reinterpret_cast<float*>(base + p.offset);
-  }
-  return nullptr;
-}
-
-bool DrumKit::SetParam(int note, const char* name, float value) {
-  int piece = -1;
-  float* field = ParamField(impl_, note, name, &piece);
-  if (!field) return false;
-  *field = value;
-  if (piece >= 0 && loaded_) {  // rebuild the piece's modes
-    Piece& p = impl_->pieces[piece];
-    if (p.owner >= 0) impl_->voices[p.owner].active = false;
-    p.bank.Free();
-    p = Piece();
-    InitPiece(p, impl_->kit.pieces[piece], double(sample_rate_), uint32_t(0x1234 + 977 * piece));
-  }
-  return true;
-}
-
-bool DrumKit::GetParam(int note, const char* name, float* value) const {
-  int piece = -1;
-  float* field = ParamField(impl_, note, name, &piece);
-  if (!field) return false;
-  *value = *field;
-  return true;
-}
-
 bool DrumKit::LoadCalibration(const char* path) {
-  FILE* f = nullptr;
-  if (fopen_s(&f, path, "r") != 0 || !f) return false;
-  char line[512];
-  int applied = 0;
-  while (fgets(line, sizeof(line), f)) {
-    char key[64] = {}, text[256] = {};
-    int note = 0;
-    float value = 0;
-    if (line[0] == '#') continue;
-    if (sscanf_s(line, "name %255[^\r\n]", text, unsigned(sizeof(text))) == 1) { impl_->cal_name = text; continue; }
-    if (sscanf_s(line, "%d %63s %f", &note, key, unsigned(sizeof(key)), &value) == 3 && SetParam(note, key, value))
-      ++applied;
+  auto cal = std::make_shared<DrumCalibration>();
+  if (!cal->Load(path) || cal->notes.empty()) return false;
+  impl_->cal = cal;
+  if (loaded_) {  // rebuild with the recorded pieces
+    Unload();
+    Load();
   }
-  fclose(f);
-  return applied > 0;
+  return true;
 }
 
-const std::string& DrumKit::calibration_name() const { return impl_->cal_name; }
+int DrumKit::CalibratedNotes() const {
+  int count = 0;
+  float semitones, gain;
+  if (impl_->cal)
+    for (int n = kFirstNote; n <= kLastNote; ++n)
+      if (Kit().notes[n - kFirstNote].piece >= 0 && impl_->cal->Source(n, &semitones, &gain)) ++count;
+  return count;
+}
+
+std::string DrumKit::CalibrationInfo() const {
+  if (!impl_->cal) return std::string();
+  const DrumCalibration& c = *impl_->cal;
+  size_t takes = 0;
+  for (const DrumCalNote& n : c.notes) takes += n.takes.size();
+  int mapped = 0;
+  for (int n = kFirstNote; n <= kLastNote; ++n) mapped += Kit().notes[n - kFirstNote].piece >= 0;
+  char text[256];
+  const size_t slash = c.path.find_last_of("\\/");
+  snprintf(text, sizeof(text), "%s: %s, %d of %d notes from %zu recorded hits (the rest modelled)",
+           c.path.substr(slash == std::string::npos ? 0 : slash + 1).c_str(), c.name.c_str(), CalibratedNotes(), mapped,
+           takes);
+  return text;
+}
+
+bool DrumKit::NoteIsRecorded(int note) const {
+  return loaded_ && note >= kFirstNote && note <= kLastNote && impl_->cal_note[note - kFirstNote] >= 0;
+}
 
 void DrumKit::Silence() {
   if (!loaded_) return;
@@ -1286,6 +1428,17 @@ void DrumKit::Silence() {
     ResetPiece(p);
     p.seed = p.seed0;
   }
+  for (int i = 0; i < kNoteCount; ++i) impl_->last_take[i] = -1;
+}
+
+void DrumKit::StrikeRecorded(int note, void* piece, const void* articulation, float velocity) {
+  Piece& p = *static_cast<Piece*>(piece);
+  const Articulation& a = *static_cast<const Articulation*>(articulation);
+  const int cal_note = impl_->cal_note[note - kFirstNote];
+  float semitones = 0, gain = 1;
+  const DrumCalNote* src = cal_note >= 0 ? impl_->cal->Source(cal_note, &semitones, &gain) : nullptr;
+  if (!src) return;
+  StrikeRecordedTake(p, *src, semitones, gain, a, velocity, impl_->last_take[note - kFirstNote]);
 }
 
 const char* DrumKit::DrumName(int note) {
@@ -1332,7 +1485,8 @@ int DrumKit::NoteOn(int v) {
   p.active = true;
   slot.piece = a.piece;
   slot.active = true;
-  Strike(p, a, float(nd.velocity));
+  if (p.calibrated) StrikeRecorded(nd.note, &p, &a, float(nd.velocity));
+  else Strike(p, a, float(nd.velocity));
   return S_OK;
 }
 
