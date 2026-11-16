@@ -792,6 +792,18 @@ int CmdDrumCompare(int argc, char** argv) {
   return 0;
 }
 
+// What MidiSynth loaded: the calibration folder it found (searched upward from this exe, the
+// same way any app in this build folder searches) and the calibrated instruments in use.
+int CmdInfo(int argc, char** argv) {
+  const uint32_t rate = argc > 2 ? atoi(argv[2]) : 48000;
+  Engine e(rate);
+  const std::string& dir = e.synth.calibration_dir();
+  printf("calibration folder: %s\n", dir.empty() ? "(none found: hand-set presets only)" : dir.c_str());
+  if (e.synth.calibrated_instruments().empty()) printf("calibrated instruments: none\n");
+  for (const std::string& name : e.synth.calibrated_instruments()) printf("calibrated: %s\n", name.c_str());
+  return 0;
+}
+
 // ---- Fitting kit parameters to recordings ----------------------------------------------------
 
 std::vector<float> RenderKitNote(synth::instruments::DrumKit& kit, int note, int velocity, size_t frames) {
@@ -1124,6 +1136,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[1], "drumcpu")) result = CmdDrumCpu(argc, argv);
     else if (!strcmp(argv[1], "drumgroove")) result = CmdDrumGroove(argc, argv);
     else if (!strcmp(argv[1], "drumfit")) result = CmdDrumFit(argc, argv);
+    else if (!strcmp(argv[1], "info")) result = CmdInfo(argc, argv);
     else if (!strcmp(argv[1], "analyze")) result = CmdAnalyze(argc, argv);
     else if (!strcmp(argv[1], "survey")) result = CmdSurvey(argc, argv);
     else if (!strcmp(argv[1], "calibrate")) result = CmdCalibrate(argc, argv);
@@ -1142,6 +1155,7 @@ int main(int argc, char** argv) {
             "  DSP_Render drumcompare <note> <recording.wav> [ab_out.wav|-] [velocity]\n"
             "  DSP_Render drumcpu [seconds] [rate]\n"
             "  DSP_Render drumgroove <out.wav> [rate] [bpm]\n"
+            "  DSP_Render info   (calibration folder and calibrated instruments in use)\n"
             "  DSP_Render drumfit <cal file> <note> <param,param,...> <recording.wav>@<velocity> ... [-rounds N]\n"
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
             "  DSP_Render survey <folder of recordings>\n"
