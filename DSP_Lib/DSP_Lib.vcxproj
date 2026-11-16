@@ -106,6 +106,7 @@
     <ClInclude Include="Code\audio\synth\instruments\modal.h" />
     <ClInclude Include="Code\audio\synth\instruments\drum_kit.h" />
     <ClInclude Include="Code\audio\synth\instruments\drum_calibration.h" />
+    <ClInclude Include="Code\audio\synth\drum_groups.h" />
     <ClInclude Include="Code\audio\synth\instruments\string_loop.h" />
     <ClInclude Include="Code\audio\synth\instruments\calibration.h" />
     <ClInclude Include="Code\audio\synth\instruments\calibrated_string.h" />

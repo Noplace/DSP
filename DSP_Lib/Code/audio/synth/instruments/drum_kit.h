@@ -64,6 +64,7 @@ class DrumKit : public InstrumentProcessor {
   bool HandlesVelocity() const override { return true; }
   void BendFrequency(real_t, int) override {}
   real_t VoicePan(int v) const override;
+  int VoiceGroup(int v) const override;  // kit piece -> drum mixer group (drum_groups.h)
 
   // Name of a GM drum note (for tools), or nullptr if unmapped.
   static const char* DrumName(int note);

@@ -57,11 +57,15 @@ class Channel : public Component {
         ++i;
     }
 
+    for (int g = 0; g < group_count_; ++g)
+      memset(group_buffers_[g], 0, sizeof(real_t) * samples_to_generate * 2);
     if (voice_count_ == 0 || mono_ == nullptr) {
       memset(buffer_, 0, sizeof(real_t) * samples_to_generate * 2);
       return;
     }
 
+    const real_t level = amplification_ * expression_;
+    const real_t left = level * pan_l, right = level * pan_r;
     memset(mono_, 0, sizeof(real_t) * samples_to_generate);
     // Voices the instrument places in the stereo field (drum kit pieces) also add to a side
     // signal: left = mid + side, right = mid - side, equal power, unity in the centre.
@@ -72,6 +76,19 @@ class Channel : public Component {
       const int index = v.index;
       const real_t gain = v.gain;
       const real_t pan = inst->VoicePan(index);
+      // Drum kit on a channel with group buffers: the piece plays into its group's own strip.
+      const int group = group_count_ > 0 ? inst->VoiceGroup(index) : -1;
+      if (group >= 0 && group < group_count_) {
+        const real_t p = pan < 0 ? 0.5f : (pan > 1 ? 1 : pan);
+        const real_t gl = sqrt(2 * (1 - p)) * gain * left, gr = sqrt(2 * p) * gain * right;
+        real_t* out = group_buffers_[group];
+        for (uint32_t s = 0; s < samples_to_generate; ++s) {
+          const real_t x = inst->Tick(index);
+          *out++ += x * gl;
+          *out++ += x * gr;
+        }
+        continue;
+      }
       if (pan < 0 || side_.size() < samples_to_generate) {
         for (uint32_t s = 0; s < samples_to_generate; ++s)
           mono_[s] += inst->Tick(index) * gain;
@@ -91,8 +108,6 @@ class Channel : public Component {
       }
     }
 
-    const real_t level = amplification_ * expression_;
-    const real_t left = level * pan_l, right = level * pan_r;
     auto bufptr = buffer_;
     if (stereo) {
       for (uint32_t s = 0; s < samples_to_generate; ++s) {
@@ -220,6 +235,14 @@ class Channel : public Component {
   }
   void set_buffer(real_t* buffer) { buffer_ = buffer; }
   // Scratch buffer for summing voices, at least as many frames as one render block.
+  // Per-group output buffers (interleaved stereo, same size as buffer()): voices whose instrument
+  // names a group (VoiceGroup, the drum kit's pieces) are rendered into them instead of buffer().
+  void set_group_buffers(real_t* const* buffers, int count) {
+    group_count_ = 0;
+    for (int g = 0; g < count && g < kMaxGroups; ++g) group_buffers_[g] = buffers[g];
+    group_count_ = count < kMaxGroups ? count : kMaxGroups;
+  }
+  int group_count() const { return group_count_; }
   void set_mono_buffer(real_t* mono, uint32_t capacity) {
     mono_ = mono;
     mono_capacity_ = capacity;
@@ -244,6 +267,9 @@ class Channel : public Component {
   real_t* mono_;
   uint32_t mono_capacity_;
   std::vector<real_t> side_;  // stereo voices: side signal (same capacity as mono_)
+  static const int kMaxGroups = 8;
+  real_t* group_buffers_[kMaxGroups] = {};
+  int group_count_ = 0;
   Voice voices_[kMaxVoices];
   int voice_count_;
   real_t amplification_,expression_,panning_,pan_l,pan_r,pitch_bend_range_,bend_factor_,aux_send;

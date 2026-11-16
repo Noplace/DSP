@@ -286,7 +286,7 @@ class MidiSynth : public Synth {
   void MidiEventPitchBend(midi::Event* event);
   real_t chromatic_scale_freq[note_count];
   struct {
-    real_t* channels[16];
+    real_t* channels[effects::Mixer::kAllStrips];  // the 16 channels, then channel 10's drum kit groups
     real_t* mono[16];
     real_t* main;
     real_t* aux;

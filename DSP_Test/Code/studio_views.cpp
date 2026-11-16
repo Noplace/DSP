@@ -5,6 +5,7 @@
 namespace demo {
 
 using namespace dsp::audio::synth::effects;
+using dsp::audio::synth::DrumGroupName;
 using dsp::audio::synth::SongInfo;
 using dsp::audio::synth::SongTrack;
 
@@ -734,9 +735,13 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
   const float y0 = area.y + 28, h = area.h - 28 - 8;
   const float master_w = 96;
   const float avail = area.w - master_w - 28;
-  int shown[16], count = 0;
-  for (int ch = 0; ch < 16; ++ch)
-    if (!mixer_used_only_ || StripUsed(ch)) shown[count++] = ch;
+  int shown[Mixer::kAllStrips], count = 0;
+  const bool kit_on_10 = midi_synth_->channel_program(Mixer::kKitBus) >= 128;
+  for (int ch = 0; ch < 16; ++ch) {
+    if (!mixer_used_only_ || StripUsed(ch) || (ch == Mixer::kKitBus && drum_strips_open_)) shown[count++] = ch;
+    if (ch == Mixer::kKitBus && kit_on_10 && drum_strips_open_)  // the drum bus's group strips beside it
+      for (int s = Mixer::kKitFirst; s < Mixer::kAllStrips; ++s) shown[count++] = s;
+  }
   const float sw = count ? std::clamp(avail / count, 40.0f, mixer_wide_ ? 130.0f : 84.0f) : 84.0f;
   for (int i = 0; i < count; ++i)
     DrawStrip(Rect(area.x + 10 + i * sw, y0, sw - 4, h), shown[i]);
@@ -748,22 +753,39 @@ void ClientMainWindow::DrawMixer(const Rect& area) {
 void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
   Gfx& g = gfx_;
   auto& p = midi_synth_->mixer.strip(ch);
-  const Color color = theme::Channel(ch);
+  const bool kit = Mixer::IsKitStrip(ch);  // a drum kit group of channel 10
+  const Color color = theme::Channel(kit ? Mixer::kKitBus : ch);
   const bool selected = selected_strip_ == ch;
-  const bool named = !strip_names_[ch].empty();
+  const bool named = kit || !strip_names_[ch].empty();
 
-  g.FillRound(r, 5, selected ? theme::kPanel3 : theme::kPanel2);
+  g.FillRound(r, 5, selected ? theme::kPanel3 : kit ? Rgb(0x1e2129) : theme::kPanel2);
   if (selected) g.StrokeRound(r, 5, color, 1.5f);
   float y = r.y + 4;
   const Rect chip(r.x + 3, y, r.w - 6, 19);
-  g.FillRound(chip, 3, WithAlpha(color, selected ? 0.9f : named ? 0.32f : 0.14f));
+  g.FillRound(chip, 3, WithAlpha(color, selected ? 0.9f : kit ? 0.22f : named ? 0.32f : 0.14f));
   char name[96];
-  snprintf(name, sizeof(name), "%d %s", ch + 1, named ? strip_names_[ch].c_str() : "");
-  g.Text(name, chip.Inset(4, 0), selected ? Rgb(0x0d0f13) : theme::kText, 11, Align::kLeft, true);
+  if (kit) snprintf(name, sizeof(name), "%s", DrumGroupName(ch - Mixer::kKitFirst));
+  else snprintf(name, sizeof(name), "%d %s", ch + 1, named ? strip_names_[ch].c_str() : "");
+  const bool drum_bus = ch == Mixer::kKitBus && midi_synth_->channel_program(ch) >= 128;
+  g.Text(name, Rect(chip.x + 4, chip.y, chip.w - (drum_bus ? 26 : 8), chip.h), selected ? Rgb(0x0d0f13) : theme::kText, 11,
+         Align::kLeft, true);
+  if (drum_bus) {  // open / close the kit's group strips (kick, snare, toms...)
+    const Rect tr(chip.r() - 21, chip.y + 2, 19, chip.h - 4);
+    if (ui_.Button(Id(this, 45), tr, drum_strips_open_ ? "\xE2\x97\x82" : "\xE2\x96\xB8", drum_strips_open_, theme::kText, 10))
+      drum_strips_open_ = !drum_strips_open_;
+    if (ui_.Hover(tr))
+      ui_.Tooltip(drum_strips_open_ ? "Hide the drum kit's group strips"
+                                    : "Show the drum kit's group strips: kick, snare, toms, hi-hat, cymbals, ride, percussion, FX",
+                  tr.cx(), tr.y);
+  }
   y += 22;
-  const bool fixed = midi_synth_->channel_override(ch) >= 0;  // instrument picked in the studio
-  g.Text(ProgramName(midi_synth_->channel_program(ch)), Rect(r.x + 3, y, r.w - 6, 13), fixed ? color : theme::kFaint,
-         9.5f, Align::kCenter, fixed);
+  if (kit) {
+    g.Text("\xE2\x86\x92 drum bus (ch 10)", Rect(r.x + 3, y, r.w - 6, 13), theme::kFaint, 9.5f, Align::kCenter);
+  } else {
+    const bool fixed = midi_synth_->channel_override(ch) >= 0;  // instrument picked in the studio
+    g.Text(drum_bus ? "Drum kit \xC2\xB7 bus" : ProgramName(midi_synth_->channel_program(ch)), Rect(r.x + 3, y, r.w - 6, 13),
+           fixed ? color : theme::kFaint, 9.5f, Align::kCenter, fixed);
+  }
   y += 16;
 
   // Section indicators: input filters/drive, EQ, dynamics, sends
@@ -803,7 +825,7 @@ void ClientMainWindow::DrawStrip(const Rect& r, int ch) {
   ui_.Switch(Id(p.slot(kStripMute), 1), Rect(r.x + 3, r.b() - 22, bw, 18), "M", p.slot(kStripMute), theme::kOrange);
   ui_.Switch(Id(p.slot(kStripSolo), 1), Rect(r.x + 6 + bw, r.b() - 22, bw, 18), "S", p.slot(kStripSolo), theme::kYellow);
 
-  if (ui_.Clicked(Id(&strip_names_[ch], 9), r)) selected_strip_ = ch;
+  if (ui_.Clicked(ch < 16 ? Id(&strip_names_[ch], 9) : Id(this, 300 + ch), r)) selected_strip_ = ch;
 }
 
 void ClientMainWindow::DrawMasterStrip(const Rect& r) {
@@ -879,14 +901,18 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
   g.Fill(area, theme::kPanel);
   g.Line(area.x + 0.5f, area.y, area.x + 0.5f, area.b(), theme::kLine);
   const int sel = selected_strip_;
-  const Color color = sel >= 0 ? theme::Channel(sel) : theme::kText;
+  const Color color = sel >= 0 ? theme::Channel(Mixer::IsKitStrip(sel) ? Mixer::kKitBus : sel) : theme::kText;
 
   // Header
   const Rect head(area.x, area.y, area.w, 60);
   g.Circle(head.x + 26, head.cy(), 9, color, true);
   char title[128];
   const float buttons_w = 168;
-  if (sel >= 0) {
+  if (Mixer::IsKitStrip(sel)) {
+    snprintf(title, sizeof(title), "Drums  \xC2\xB7  %s", DrumGroupName(sel - Mixer::kKitFirst));
+    g.Text("Drum kit group of channel 10  \xE2\x86\x92  channel 10's strip is the drum bus",
+           Rect(head.x + 46, head.y + 32, head.w - 60, 16), theme::kDim, 10.5f);
+  } else if (sel >= 0) {
     snprintf(title, sizeof(title), "Channel %d%s%s", sel + 1, strip_names_[sel].empty() ? "" : "  \xC2\xB7  ",
              strip_names_[sel].c_str());
     // Instrument: click to pick one for this channel (or go back to the file's choice).
@@ -973,7 +999,7 @@ void ClientMainWindow::DrawInspector(const Rect& area) {
 
 float ClientMainWindow::DrawChannelInspector(float x, float y, float w, int ch) {
   auto& p = midi_synth_->mixer.strip(ch);
-  const Color color = theme::Channel(ch);
+  const Color color = theme::Channel(Mixer::IsKitStrip(ch) ? Mixer::kKitBus : ch);
   auto knob = [&](float kx, float ky, float kw, int id, const char* label = nullptr) {
     ui_.Knob(Rect(kx, ky, kw, 66), StripParamInfo(id), p.slot(id), color, label);
   };
@@ -1209,7 +1235,7 @@ float ClientMainWindow::DrawMasterInspector(float x, float y, float w) {
 void ClientMainWindow::DrawInstrumentPicker(const Rect& a) {
   Gfx& g = gfx_;
   const int ch = selected_strip_;
-  if (ch < 0) {
+  if (ch < 0 || ch >= 16) {  // master or a drum kit group: no instrument to pick
     picker_open_ = false;
     return;
   }
@@ -1283,7 +1309,7 @@ void ClientMainWindow::DrawResponseGraph(const Rect& r, int strip) {
   auto slot = [&](int id) { return is_master ? mixer.master().slot(id) : mixer.strip(strip).slot(id); };
   auto info = [&](int id) -> const ParamInfo& { return is_master ? MasterParamInfo(id) : StripParamInfo(id); };
   auto get = [&](int id) { return slot(id)->load(std::memory_order_relaxed); };
-  const Color accent = is_master ? theme::kText : theme::Channel(strip);
+  const Color accent = is_master ? theme::kText : theme::Channel(Mixer::IsKitStrip(strip) ? Mixer::kKitBus : strip);
 
   g.FillRound(r, 6, Rgb(0x0d0f13));
   const Rect plot(r.x + 30, r.y + 22, r.w - 40, r.h - 40);

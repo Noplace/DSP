@@ -7,6 +7,29 @@ using namespace dsp::audio::synth::effects;
 
 namespace {
 
+// Strip names in session files: "master", "channel 1".."channel 16", "drums kick".."drums fx".
+std::string StripTarget(int strip) {
+  if (strip < 0) return "master";
+  if (Mixer::IsKitStrip(strip)) {
+    std::string name = dsp::audio::synth::DrumGroupName(strip - Mixer::kKitFirst);
+    for (auto& c : name) c = char(tolower(c));
+    return "drums " + name;
+  }
+  return "channel " + std::to_string(strip + 1);
+}
+
+// -1 master, 0..kAllStrips-1, or -2 when the name isn't a strip.
+int ParseStripTarget(const std::string& target) {
+  if (target == "master") return -1;
+  if (target.rfind("channel ", 0) == 0) {
+    const int c = atoi(target.c_str() + 8);
+    return c >= 1 && c <= Mixer::kStrips ? c - 1 : -2;
+  }
+  for (int s = Mixer::kKitFirst; s < Mixer::kAllStrips; ++s)
+    if (StripTarget(s) == target) return s;
+  return -2;
+}
+
 bool EndsWith(const std::string& s, const char* suffix) {
   const size_t n = strlen(suffix);
   if (s.size() < n) return false;
@@ -199,6 +222,11 @@ bool ClientMainWindow::SaveSession(const char* path) {
     WriteStripParams(section, mixer.strip(ch), false);
     if (!section.values.empty()) ini.sections.push_back(section);
   }
+  for (int st = Mixer::kKitFirst; st < Mixer::kAllStrips; ++st) {  // drum kit groups of channel 10
+    IniFile::Section section{StripTarget(st), {}};
+    WriteStripParams(section, mixer.strip(st), false);
+    if (!section.values.empty()) ini.sections.push_back(section);
+  }
   for (int t = 0; t < 64; ++t) {
     const bool mute = midi_synth_->track_muted(t), solo = midi_synth_->track_solo(t);
     if (!mute && !solo) continue;
@@ -220,7 +248,7 @@ bool ClientMainWindow::SaveSession(const char* path) {
   const auto& lanes = midi_synth_->song().automation;
   for (size_t i = 0; i < lanes.size(); ++i) {
     auto& a = ini.Add("automation " + std::to_string(i + 1));
-    a.Set("target", lanes[i].strip < 0 ? std::string("master") : "channel " + std::to_string(lanes[i].strip + 1));
+    a.Set("target", StripTarget(lanes[i].strip));
     a.Set("param", lanes[i].strip < 0 ? MasterParamKey(lanes[i].param) : StripParamKey(lanes[i].param));
     std::string points;
     char buf[64];
@@ -237,8 +265,7 @@ bool ClientMainWindow::SaveSession(const char* path) {
         int strip, param;
         if (!midi_synth_->MappedTarget(ch, cc, &strip, &param)) continue;
         map.Set("ch" + std::to_string(ch + 1) + ".cc" + std::to_string(cc),
-                strip < 0 ? std::string("master/") + MasterParamKey(param)
-                          : "channel " + std::to_string(strip + 1) + "/" + StripParamKey(param));
+                StripTarget(strip) + "/" + (strip < 0 ? MasterParamKey(param) : StripParamKey(param)));
       }
     if (!map.values.empty()) ini.sections.push_back(map);
   }
@@ -272,6 +299,8 @@ bool ClientMainWindow::LoadSession(const char* path) {
     midi_synth_->set_channel_override(ch, section ? std::clamp(int(section->GetNumber("instrument", -1)), -1, 128) : -1);
     if (section) ReadStripParams(*section, mixer.strip(ch), false);
   }
+  for (int st = Mixer::kKitFirst; st < Mixer::kAllStrips; ++st)
+    if (const auto* section = ini.Find(StripTarget(st))) ReadStripParams(*section, mixer.strip(st), false);
   ir_path_.clear();
   if (auto* master = ini.Find("master")) {
     ReadMasterParams(*master, mixer.master());
@@ -301,7 +330,8 @@ bool ClientMainWindow::LoadSession(const char* path) {
     midi_synth_->set_track_muted(t, section && section->GetNumber("mute", 0) != 0);
     midi_synth_->set_track_solo(t, section && section->GetNumber("solo", 0) != 0);
   }
-  selected_strip_ = std::clamp(int(s.GetNumber("selected_strip", 0)) - 1, -1, 15);
+  selected_strip_ = std::clamp(int(s.GetNumber("selected_strip", 0)) - 1, -1, Mixer::kAllStrips - 1);
+  if (Mixer::IsKitStrip(selected_strip_)) drum_strips_open_ = true;
   if (const auto* transport = ini.Find("transport")) {
     const double speed = std::clamp(transport->GetNumber("speed", 1.0), 0.5, 1.5);
     midi_synth_->set_speed(speed);
@@ -321,9 +351,10 @@ bool ClientMainWindow::LoadSession(const char* path) {
       const std::string target = a->Get("target") ? *a->Get("target") : "";
       const std::string key = a->Get("param") ? *a->Get("param") : "";
       dsp::audio::synth::AutomationLane lane;
-      lane.strip = target == "master" ? -1 : atoi(target.c_str() + std::min<size_t>(8, target.size())) - 1;
+      lane.strip = ParseStripTarget(target);
+      if (lane.strip < -1) continue;
       lane.param = lane.strip < 0 ? FindMasterParam(key.c_str()) : FindStripParam(key.c_str());
-      if (lane.param < 0 || lane.strip < -1 || lane.strip > 15) continue;
+      if (lane.param < 0) continue;
       const std::string points = a->Get("points") ? *a->Get("points") : "";
       for (const char* p = points.c_str(); *p;) {
         char* end = nullptr;
@@ -349,9 +380,10 @@ bool ClientMainWindow::LoadSession(const char* path) {
       const size_t slash = kv.second.find('/');
       if (slash == std::string::npos) continue;
       const std::string target = kv.second.substr(0, slash), key = kv.second.substr(slash + 1);
-      const int strip = target == "master" ? -1 : atoi(target.c_str() + std::min<size_t>(8, target.size())) - 1;
+      const int strip = ParseStripTarget(target);
+      if (strip < -1) continue;
       const int param = strip < 0 ? FindMasterParam(key.c_str()) : FindStripParam(key.c_str());
-      if (param >= 0 && strip >= -1 && strip <= 15) midi_synth_->SetMidiMapping(ch - 1, cc, strip, param);
+      if (param >= 0) midi_synth_->SetMidiMapping(ch - 1, cc, strip, param);
     }
   }
   markers_.clear();

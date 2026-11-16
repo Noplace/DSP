@@ -396,7 +396,7 @@ void ClientMainWindow::LevelMeter::Update(float peak_l, float peak_r, float gr_g
 void ClientMainWindow::UpdateMeters(float dt) {
   if (synth_player_ == nullptr || midi_synth_ == nullptr) return;
   auto& mixer = midi_synth_->mixer;
-  for (int i = 0; i < 16; ++i) {
+  for (int i = 0; i < dsp::audio::synth::effects::Mixer::kAllStrips; ++i) {
     float l, r;
     mixer.TakeStripPeak(i, l, r);
     strip_meter_[i].Update(l, r, mixer.TakeStripGainReduction(i), dt);

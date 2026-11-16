@@ -13,7 +13,7 @@ namespace demo {
 struct ExportSettings {
   std::string midi_path, wav_path;
   uint32_t sample_rate = 48000;
-  float strip[16][dsp::audio::synth::effects::kStripParamCount];
+  float strip[dsp::audio::synth::effects::Mixer::kAllStrips][dsp::audio::synth::effects::kStripParamCount];  // channels, then drum kit groups
   float master[dsp::audio::synth::effects::kMasterParamCount];
   int channel_override[16];
   bool follow_midi_sends = false;

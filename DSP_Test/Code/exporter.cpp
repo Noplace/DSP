@@ -6,7 +6,7 @@ using namespace dsp::audio::synth;
 using namespace dsp::audio::synth::effects;
 
 void ExportSettings::CaptureFrom(MidiSynth& synth) {
-  for (int s = 0; s < 16; ++s)
+  for (int s = 0; s < Mixer::kAllStrips; ++s)
     for (int id = 0; id < kStripParamCount; ++id) strip[s][id] = synth.mixer.strip(s).get(id);
   for (int id = 0; id < kMasterParamCount; ++id) master[id] = synth.mixer.master().get(id);
   for (int ch = 0; ch < 16; ++ch) channel_override[ch] = synth.channel_override(ch);
@@ -117,7 +117,7 @@ void Exporter::Run(ExportSettings s) {
   synth.Initialize();  // builds the instrument bank: the slow part
   if (cancel_) return finish(kCancelled, "Export cancelled");
 
-  for (int st = 0; st < 16; ++st)
+  for (int st = 0; st < Mixer::kAllStrips; ++st)
     for (int id = 0; id < kStripParamCount; ++id) synth.mixer.strip(st).set(id, s.strip[st][id]);
   for (int id = 0; id < kMasterParamCount; ++id) synth.mixer.master().set(id, s.master[id]);
   synth.mixer.set_follow_midi_sends(s.follow_midi_sends);

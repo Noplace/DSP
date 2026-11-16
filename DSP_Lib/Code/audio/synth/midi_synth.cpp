@@ -290,6 +290,14 @@ void MidiSynth::Initialize() {
     channels[i]->set_silence(true);
     channels[i]->set_panning(0.5f);
     channels[i]->set_amplification(100 / 127.0f);  // GM default volume (CC7 = 100)
+    if (i == effects::Mixer::kKitBus) {  // channel 10: each drum group into its own mixer strip
+      for (int g = 0; g < effects::Mixer::kKitStrips; ++g) {
+        real_t*& b = buffers.channels[effects::Mixer::kKitFirst + g];
+        b = new real_t[buffers.main_size];
+        memset(b, 0, sizeof(real_t) * buffers.main_size);
+      }
+      channels[i]->set_group_buffers(buffers.channels + effects::Mixer::kKitFirst, effects::Mixer::kKitStrips);
+    }
   }
   channels[9]->set_instrument(drum_kit_);  // GM channel 10: drum kit
 
@@ -329,6 +337,7 @@ void MidiSynth::Deinitialize() {
     SafeDeleteArray(&buffers.channels[i]);
     SafeDeleteArray(&buffers.mono[i]);
   }
+  for (int s = effects::Mixer::kKitFirst; s < effects::Mixer::kAllStrips; ++s) SafeDeleteArray(&buffers.channels[s]);
   // instr[] and drum_kit_ only point into the store (several programs share one instrument).
   memset(instr, 0, sizeof(instr));
   drum_kit_ = nullptr;
@@ -697,7 +706,7 @@ void MidiSynth::ApplyAutomation(double ms) {
     const float v = AutomationValue(lane, ms);
     if (lane.strip < 0) {
       if (lane.param < effects::kMasterParamCount) mixer.master().set(lane.param, v);
-    } else if (lane.strip < 16 && lane.param < effects::kStripParamCount) {
+    } else if (lane.strip < effects::Mixer::kAllStrips && lane.param < effects::kStripParamCount) {
       mixer.strip(lane.strip).set(lane.param, v);
     }
   }

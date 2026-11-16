@@ -850,6 +850,15 @@ int CmdDrumGroove(int argc, char** argv) {
   std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.beat < b.beat; });
 
   Engine e(rate);
+  // Optional "solo:<group>" / "mute:<group>" (drum mixer groups, e.g. solo:kick): checks the
+  // kit's group strips.
+  for (int i = 5; i < argc; ++i) {
+    const bool solo = !strncmp(argv[i], "solo:", 5), mute = !strncmp(argv[i], "mute:", 5);
+    if (!solo && !mute) continue;
+    for (int g = 0; g < synth::kDrumGroupCount; ++g)
+      if (!_stricmp(argv[i] + 5, synth::DrumGroupName(g)))
+        e.synth.mixer.strip(synth::effects::Mixer::kKitFirst + g).set(solo ? synth::effects::kStripSolo : synth::effects::kStripMute, 1);
+  }
   synth::effects::MasterLimiter limiter;
   limiter.Configure(rate);
   std::vector<float> out;

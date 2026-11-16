@@ -43,6 +43,7 @@
 #include "audio/synth/wavetable.h"
 #include "audio/synth/synth.h"
 #include "audio/synth/adsr.h"
+#include "audio/synth/drum_groups.h"
 
 #include "audio/synth/filters/lowpass.h"
 #include "audio/synth/filters/chebyshev_filter.h"

@@ -1320,7 +1320,7 @@ struct DrumKit::Impl {
   int cal_note[kNoteCount];
   int last_take[kNoteCount];
   std::vector<Piece> pieces;
-  struct Slot { int piece = -1; bool active = false; } voices[Polyphony];
+  struct Slot { int piece = -1; int group = -1; bool active = false; } voices[Polyphony];
 };
 
 DrumKit::DrumKit() : InstrumentProcessor(), impl_(new Impl()), cdata_(nullptr) {
@@ -1484,6 +1484,7 @@ int DrumKit::NoteOn(int v) {
   p.owner = v;
   p.active = true;
   slot.piece = a.piece;
+  slot.group = DrumGroupOfNote(nd.note);
   slot.active = true;
   if (p.calibrated) StrikeRecorded(nd.note, &p, &a, float(nd.velocity));
   else Strike(p, a, float(nd.velocity));
@@ -1504,6 +1505,10 @@ bool DrumKit::IsVoiceActive(int v) const {
 
 real_t DrumKit::VoiceLevel(int v) const {
   return IsVoiceActive(v) ? impl_->pieces[impl_->voices[v].piece].level : 0;
+}
+
+int DrumKit::VoiceGroup(int v) const {
+  return loaded_ && impl_->voices[v].piece >= 0 ? impl_->voices[v].group : -1;
 }
 
 real_t DrumKit::VoicePan(int v) const {

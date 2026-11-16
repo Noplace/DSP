@@ -11,7 +11,7 @@ static const int kBitsPerStrip = 128;
 bool ClientMainWindow::SlotToParam(const std::atomic<float>* slot, int* strip, int* param) const {
   if (!slot || !midi_synth_) return false;
   auto& mixer = midi_synth_->mixer;
-  for (int s = 0; s < Mixer::kStrips; ++s) {
+  for (int s = 0; s < Mixer::kAllStrips; ++s) {
     const std::atomic<float>* base = mixer.strip(s).slot(0);
     if (slot >= base && slot < base + kStripParamCount) {
       *strip = s;
@@ -34,6 +34,7 @@ std::string ClientMainWindow::ParamLabel(int strip, int param) const {
   for (auto& c : key)
     if (c == '.' || c == '_') c = ' ';
   if (strip < 0) return "Master \xC2\xB7 " + key;
+  if (Mixer::IsKitStrip(strip)) return std::string("Drums ") + DrumGroupName(strip - Mixer::kKitFirst) + " \xC2\xB7 " + key;
   std::string who = "Ch " + std::to_string(strip + 1);
   if (!strip_names_[strip].empty()) who += " " + strip_names_[strip];
   return who + " \xC2\xB7 " + key;
@@ -73,7 +74,7 @@ void ClientMainWindow::RemoveAutomationLane(int strip, int param) {
 }
 
 void ClientMainWindow::RefreshMappedBits() {
-  mapped_bits_.assign(size_t(Mixer::kStrips + 1) * kBitsPerStrip, 0);
+  mapped_bits_.assign(size_t(Mixer::kAllStrips + 1) * kBitsPerStrip, 0);
   for (int ch = 0; ch < 16; ++ch)
     for (int cc = 0; cc < 128; ++cc) {
       int strip, param;
@@ -291,6 +292,7 @@ void ClientMainWindow::DrawKeyboard(const Rect& r) {
 }
 
 bool ClientMainWindow::StripUsed(int ch) const {
+  if (ch >= 16) return drum_strips_open_;  // drum kit group strips: shown with channel 10
   return !strip_names_[ch].empty() || selected_strip_ == ch || midi_synth_->channel_override(ch) >= 0 ||
          strip_meter_[ch].hold[0] > -80.0f || strip_meter_[ch].hold[1] > -80.0f;
 }

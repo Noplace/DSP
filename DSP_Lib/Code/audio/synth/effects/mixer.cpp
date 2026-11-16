@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "mixer.h"
+#include "../drum_groups.h"
 #include "biquad.h"
 #include "convolver.h"
 
@@ -66,7 +67,7 @@ struct StripTable {
     for (int i = 0; i < kEqParamCount; ++i) info[kStripEq + i] = kEqInfo[i];
     for (int i = 0; i < kCompParamCount; ++i) info[kStripComp + i] = kStripCompInfo[i];
     info[kStripDynFirst] = {"Dyn first", 0, 1, 0, U::kSwitch, false};
-    info[kStripCompSidechain] = {"Key", -1, 15, -1, U::kChannel, false};
+    info[kStripCompSidechain] = {"Key", -1, 23, -1, U::kChannel, false};  // 16..23: drum kit groups
     info[kStripGateOn] = {"Gate", 0, 1, 0, U::kSwitch, false};
     info[kStripGateThreshold] = {"Thresh", -80, 0, -50, U::kDb, false};
     info[kStripGateRange] = {"Range", 0, 80, 40, U::kDb, false};
@@ -248,7 +249,13 @@ void FormatParam(const ParamInfo& info, float v, char* out, size_t n) {
       return;
     }
     case ParamUnit::kSwitch: snprintf(out, n, v >= 0.5f ? "On" : "Off"); return;
-    case ParamUnit::kChannel: if (v < -0.5f) snprintf(out, n, "Self"); else snprintf(out, n, "Ch %d", int(lroundf(v)) + 1); return;
+    case ParamUnit::kChannel: {
+      const int c = int(lroundf(v));
+      if (c < 0) snprintf(out, n, "Self");
+      else if (c >= Mixer::kKitFirst) snprintf(out, n, "%s", DrumGroupName(c - Mixer::kKitFirst));
+      else snprintf(out, n, "Ch %d", c + 1);
+      return;
+    }
     case ParamUnit::kChoice: snprintf(out, n, "%d", int(lroundf(v))); return;
     default: snprintf(out, n, "%.2f", v); return;
   }
@@ -716,7 +723,7 @@ void Mixer::Initialize(uint32_t sample_rate, uint32_t max_frames) {
   Deinitialize();
   sample_rate_ = sample_rate;
   max_frames_ = max_frames;
-  strips_ = new StripState[kStrips];
+  strips_ = new StripState[kAllStrips];
   master_ = new MasterState();
   master_->reverb.Init(sample_rate);
   master_->delay.Init(sample_rate);
@@ -769,19 +776,20 @@ void Mixer::ResetMaster() {
 }
 
 void Mixer::ResetAll() {
-  for (int i = 0; i < kStrips; ++i) ResetStrip(i);
+  for (int i = 0; i < kAllStrips; ++i) ResetStrip(i);
   ResetMaster();
 }
 
 float Mixer::EffectiveSend(int strip, int bus) const {
   static const int kSendParam[3] = {kStripSendReverb, kStripSendDelay, kStripSendChorus};
   float s = strip_params_[strip].get(kSendParam[bus]);
-  if (follow_midi_sends()) s += midi_send(strip, bus);
+  // The file's send levels are for the whole channel: the drum bus applies them, not each group.
+  if (follow_midi_sends() && !IsKitStrip(strip)) s += midi_send(strip, bus);
   return s;
 }
 
 bool Mixer::AnySolo() const {
-  for (int i = 0; i < kStrips; ++i)
+  for (int i = 0; i < kAllStrips; ++i)
     if (strip_params_[i].get(kStripSolo) >= 0.5f) return true;
   return false;
 }
@@ -815,19 +823,33 @@ void Mixer::Process(float* const* strip_in, uint32_t frames, float* out) {
     const bool any_solo = AnySolo();
     // Compressor sidechains listen to another channel's raw signal: copy those before the strips
     // (which process their buffers in place) run.
-    int key_source[kStrips];
-    bool copied[kStrips] = {};
-    for (int s = 0; s < kStrips; ++s) {
+    int key_source[kAllStrips];
+    bool copied[kAllStrips] = {};
+    for (int s = 0; s < kAllStrips; ++s) {
       const auto& p = strip_params_[s];
       const int src = int(lroundf(p.get(kStripCompSidechain)));
-      key_source[s] = p.get(kStripComp + kCompOn) >= 0.5f && src >= 0 && src < kStrips && src != s ? src : -1;
-      if (key_source[s] >= 0 && !copied[src]) {
+      key_source[s] = p.get(kStripComp + kCompOn) >= 0.5f && src >= 0 && src < kAllStrips && src != s ? src : -1;
+      if (key_source[s] >= 0 && !copied[src] && src != kKitBus) {  // the bus's input is complete only after its groups
         memcpy(key_[src].data(), strip_in[src] + done * 2, sizeof(float) * n * 2);
         copied[src] = true;
       }
     }
+    // Solo across the drum bus: soloing a kit group keeps the bus (channel 10) open, and soloing
+    // the bus keeps all its groups open.
+    bool kit_solo = false;
+    for (int g = kKitFirst; g < kAllStrips; ++g) kit_solo |= strip_params_[g].get(kStripSolo) >= 0.5f;
+    const bool bus_solo = strip_params_[kKitBus].get(kStripSolo) >= 0.5f;
+    // Kit groups first: they mix into the drum bus's input, not the master.
+    for (int s = kKitFirst; s < kAllStrips; ++s)
+      ProcessStrip(s, strip_in[s] + done * 2, n, strip_in[kKitBus] + done * 2, any_solo, bus_solo,
+                   key_source[s] >= 0 ? key_[key_source[s]].data() : nullptr);
     for (int s = 0; s < kStrips; ++s)
-      ProcessStrip(s, strip_in[s] + done * 2, n, out + done * 2, any_solo,
+      if (key_source[s] == kKitBus) {
+        memcpy(key_[kKitBus].data(), strip_in[kKitBus] + done * 2, sizeof(float) * n * 2);
+        break;
+      }
+    for (int s = 0; s < kStrips; ++s)
+      ProcessStrip(s, strip_in[s] + done * 2, n, out + done * 2, any_solo, s == kKitBus && kit_solo,
                    key_source[s] >= 0 ? key_[key_source[s]].data() : nullptr);
     ProcessMaster(out + done * 2, n);
     done += n;
@@ -835,7 +857,8 @@ void Mixer::Process(float* const* strip_in, uint32_t frames, float* out) {
   _mm_setcsr(csr);
 }
 
-void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, const float* key) {
+void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, bool solo_safe,
+                         const float* key) {
   StripState& st = strips_[index];
   const StripParams& p = strip_params_[index];
   const float fs = float(sample_rate_);
@@ -861,7 +884,8 @@ void Mixer::ProcessStrip(int index, float* io, uint32_t frames, float* out, bool
     next.comp = sm[kStripComp + kCompOn];
     next.noise_gate = sm[kStripGateOn];
     // Mute / solo gate, smoothed so switching never clicks.
-    const float audible = p.get(kStripMute) < 0.5f && (!any_solo || p.get(kStripSolo) >= 0.5f) ? 1.0f : 0.0f;
+    const float audible =
+        p.get(kStripMute) < 0.5f && (!any_solo || solo_safe || p.get(kStripSolo) >= 0.5f) ? 1.0f : 0.0f;
     st.gate = first ? audible : st.gate + (audible - st.gate) * k;
     if (fabsf(st.gate - audible) < 1e-4f) st.gate = audible;
     next.mute = st.gate;

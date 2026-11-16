@@ -150,7 +150,7 @@ class ClientMainWindow {
   double last_tick_, last_input_, last_active_, last_paint_;  // seconds (QPC)
 
   // studio state
-  int selected_strip_;                 // -1 = master
+  int selected_strip_;                 // -1 = master, 0..15 channels, 16..23 drum kit groups (Mixer::kKitFirst)
   std::vector<int> visible_tracks_;    // song tracks with notes, or made in the studio
   std::string strip_names_[16];        // track name using each channel
   double view_start_ms_;               // track view: time at the left edge of the lanes
@@ -165,7 +165,7 @@ class ClientMainWindow {
   float inspector_content_h_;
   float graph_h_ = 196;
   double inspector_wheel_until_ = 0;  // knobs ignore the wheel until then (panel scrolling)
-  LevelMeter strip_meter_[16];
+  LevelMeter strip_meter_[dsp::audio::synth::effects::Mixer::kAllStrips];
   LevelMeter master_meter_;
   float output_db_, limiter_db_;
   float output_hold_time_;
@@ -198,6 +198,7 @@ class ClientMainWindow {
   int kb_note_ = -1;           // key held with the mouse
   bool mixer_used_only_ = false;
   bool mixer_wide_ = false;
+  bool drum_strips_open_ = false;  // mixer shows channel 10's drum kit group strips
   bool StripUsed(int ch) const;
 
   // metering / convolution

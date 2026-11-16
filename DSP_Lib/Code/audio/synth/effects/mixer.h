@@ -21,7 +21,7 @@ struct ConvolutionIr;  // convolver.h
 // ---------------------------------------------------------------------------------------------
 
 enum class ParamUnit : uint8_t { kNone, kDb, kFader, kHz, kMs, kPercent, kRatio, kPan, kSwitch, kQ, kTimes,
-                                 kChannel,  // -1 = self, 0..15 = channel 1..16
+                                 kChannel,  // -1 = self, 0..15 = channel 1..16, 16..23 = drum kit group
                                  kChoice }; // small integer
 
 struct ParamInfo {
@@ -134,7 +134,15 @@ double EqResponseDb(const float* eq_params, double sample_rate, double freq);
 // ---------------------------------------------------------------------------------------------
 class Mixer {
  public:
-  static const int kStrips = 16;
+  static const int kStrips = 16;      // one per MIDI channel
+  // Drum kit sub-strips (drum_groups.h) after the channel strips: strip kKitFirst + g is drum
+  // group g of channel 10. They are processed first and add up into channel 10's input, so its
+  // strip works as the drum bus.
+  static const int kKitStrips = 8;
+  static const int kKitFirst = kStrips;
+  static const int kKitBus = 9;
+  static const int kAllStrips = kStrips + kKitStrips;
+  static bool IsKitStrip(int i) { return i >= kKitFirst && i < kAllStrips; }
   static const int kSubBlock = 32;
   static const int kScopeSize = 8192;  // analyser ring buffer (power of two)
 
@@ -145,7 +153,8 @@ class Mixer {
   void Deinitialize();
   uint32_t sample_rate() const { return sample_rate_; }
 
-  // Audio thread. strip_in[i] = interleaved stereo of channel i (processed in place);
+  // Audio thread. strip_in[i] = interleaved stereo of strip i (kAllStrips of them: channels, then
+  // the drum kit groups; processed in place);
   // out = interleaved stereo master mix.
   void Process(float* const* strip_in, uint32_t frames, float* out);
 
@@ -187,7 +196,7 @@ class Mixer {
   double convolution_ir_seconds() const { return sample_rate_ ? double(ir_length_) / sample_rate_ : 0.0; }
   void CollectGarbage();
 
-  // Spectrum/scope tap: -1 = master output, 0..15 = that strip after its fader.
+  // Spectrum/scope tap: -1 = master output, 0..kAllStrips-1 = that strip after its fader.
   void set_analyzer_source(int source) { analyzer_source_.store(source, std::memory_order_relaxed); }
   int analyzer_source() const { return analyzer_source_.load(std::memory_order_relaxed); }
   // Copies the most recent `count` mono samples of the tap (oldest first). count <= kScopeSize.
@@ -203,26 +212,26 @@ class Mixer {
   struct StripState;
   struct MasterState;
 
-  void ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, const float* key);
+  void ProcessStrip(int index, float* io, uint32_t frames, float* out, bool any_solo, bool solo_safe, const float* key);
   void ProcessMaster(float* out, uint32_t frames);
   void WriteScope(const float* stereo, uint32_t frames);
 
   uint32_t sample_rate_ = 0;
   uint32_t max_frames_ = 0;
-  StripParams strip_params_[kStrips];
+  StripParams strip_params_[kAllStrips];
   MasterParams master_params_;
-  Meter strips_meter_[kStrips];
+  Meter strips_meter_[kAllStrips];
   Meter master_meter_;
   StripState* strips_ = nullptr;
   MasterState* master_ = nullptr;
   std::vector<float> bus_[3];  // reverb, delay, chorus send buses (interleaved stereo)
-  std::vector<float> key_[kStrips];  // raw channel signals used as compressor sidechains
+  std::vector<float> key_[kAllStrips];  // raw strip signals used as compressor sidechains
   std::atomic<float> mb_gr_[3] = {1.0f, 1.0f, 1.0f};
   std::atomic<ConvolutionIr*> pending_ir_{nullptr}, retired_ir_{nullptr};
   ConvolutionIr* current_ir_ = nullptr;  // audio thread
   std::string ir_name_;
   size_t ir_length_ = 0;
-  std::atomic<float> midi_send_[kStrips][3] = {};
+  std::atomic<float> midi_send_[kAllStrips][3] = {};
   std::atomic<bool> follow_midi_sends_{false};
   std::atomic<float> scope_[kScopeSize];
   std::atomic<uint32_t> scope_pos_;
