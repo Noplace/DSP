@@ -1001,7 +1001,7 @@ int main(int argc, char** argv) {
             "  DSP_Render drum <note> [velocity] [rate]\n"
             "  DSP_Render drumcompare <note> <recording.wav> [ab_out.wav|-] [velocity]\n"
             "  DSP_Render drumcpu [seconds] [rate]\n"
-            "  DSP_Render drumgroove <out.wav> [rate] [bpm]\n"
+            "  DSP_Render drumgroove <out.wav> [rate] [bpm] [solo:<group>|mute:<group> ...]  (kick snare toms hi-hat cymbals ride percussion fx)\n"
             "  DSP_Render info   (calibration folder and calibrated instruments in use)\n"
             "  DSP_Render drumcal <manifest.txt> <out.cal>   (drum calibration from recorded hits)\n"
             "  DSP_Render analyze <recording.wav> [midi_note]\n"
